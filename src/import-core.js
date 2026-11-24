@@ -10,6 +10,8 @@ import { PROBE, PROBE2, ERR, LIMITS, plan, planPerBody, refineOk, diagonal, triC
 //    count and bounding box, otherwise the whole-file plan below is used);
 // 3) whole-file plan (0.1.x): base pass at clamp(ratio·D), coarsened when the prediction exceeds the budget;
 // 4) accurate mode: refined pass (≈4× triangles) if the actual base count allows it, then Richardson.
+const CURVED = /\b(B_SPLINE_SURFACE\w*|CYLINDRICAL_SURFACE|CONICAL_SURFACE|SPHERICAL_SURFACE|TOROIDAL_SURFACE|SURFACE_OF_\w+|OFFSET_SURFACE|RATIONAL_B_SPLINE_SURFACE|ADVANCED_FACE|MANIFOLD_SOLID_BREP|BREP_WITH_VOIDS)\s*\(/;
+export const planarFaceted = text => !!text && /\bFACETED_BREP\s*\(/.test(text) && !CURVED.test(text);
 export function importStep(occt, buf, { mode = 'accurate', defRho = 7850, name = '', progress = () => { }, perBody = true } = {}) {
   const t0 = Date.now(), stats = { passes: [] };
   const read = (p, label, data = buf) => {
@@ -26,7 +28,14 @@ export function importStep(occt, buf, { mode = 'accurate', defRho = 7850, name =
   const solidNames = mapped ? table.solids.map(s => s.name) : null;
   const D = diagonal(probe.meshes), warn = [], note = [], info = [];
   let bodies = null, scale = 1, how = 'file';
-  if (perBody && mapped && probe.meshes.length > 1) {
+  // 0.2.0-alpha.4: a planar faceted file (FACETED_BREP of planar FACE_SURFACEs, e.g. this app's counterweight export)
+  // tessellates exactly at any deflection: one pass is the exact mesh, so the probe is the result (no ± needed).
+  if (planarFaceted(text) && table && table.solids.length === probe.meshes.length) {
+    bodies = buildBodies([probe], dens, defRho, name, null, { solidNames });
+    bodies.forEach(b => { b.unc = { dV: 0, dc: 0, exact: true }; b.mesh = { group: 1, deflection: 0, angular: 0, tris: b.idx.length / 3, coarsened: false, scale: 1, passes: 1, faceted: true }; });
+    how = 'faceted'; info.push('planar faceted STEP (triangles): the mesh is the exact solid, read in one pass');
+  }
+  if (!bodies && perBody && mapped && probe.meshes.length > 1) {
     try { const r = perBodyImport(); if (r) { bodies = r; how = 'per-body'; } } catch (e) { info.push(`per-body meshing skipped (${e.message}); used one mesh setting for the whole file`); }
   }
   function perBodyImport() {
@@ -79,6 +88,6 @@ export function importStep(occt, buf, { mode = 'accurate', defRho = 7850, name =
   let fu = null; try { fu = fileUncertainty(text); } catch { }
   if (fu != null && fu >= CAD_FLOOR.minTol) { applyCadFloor(bodies, fu); info.push(`the file declares a ${+fu.toPrecision(3)} mm modelling uncertainty: CAD edge-tolerance gaps can shift volume and CG at any mesh size, so every per-body ± is floored at ${(CAD_FLOOR.rel * fu).toExponential(0)} of volume and ${+(CAD_FLOOR.cg * fu * 1000).toPrecision(2)} µm CG and marked "≥"`); }
   const fin = bodies.reduce((a, b) => a + b.idx.length / 3, 0);
-  Object.assign(stats, { fileUncertainty: fu, ms: Date.now() - t0, D, scale, plan: how, mode: bodies.every(b => b.mesh?.passes === 2) ? 'accurate' : bodies.some(b => b.mesh?.passes === 2) ? 'mixed' : 'fast', tris: fin });
+  Object.assign(stats, { fileUncertainty: fu, ms: Date.now() - t0, D, scale, plan: how, mode: how === 'faceted' ? 'exact (faceted)' : bodies.every(b => b.mesh?.passes === 2) ? 'accurate' : bodies.some(b => b.mesh?.passes === 2) ? 'mixed' : 'fast', tris: fin });
   return { bodies, warn, info, stats };
 }

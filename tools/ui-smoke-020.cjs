@@ -21,7 +21,7 @@ const url = process.argv[2] || 'http://localhost:8765/', FIX = path.join(__dirna
     const load = async files => { await p.setInputFiles('#file', files); await p.waitForFunction(() => /bodies ·|Session loaded|failed/.test(document.querySelector('#status').textContent), null, { timeout: 60000 }); };
     try {
       await p.goto(url); await load(FIX);
-      check('version 0.2.0-alpha.4 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.4');
+      check('version 0.2.0-alpha.5 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.5');
       // ---- roles ----
       await role('hub', 'hub'); await role('boundary', 'boundary'); await role('cw_out', 'boundary');
       let s = await S(); const ib = await idx('boundary'), io = await idx('cw_out');
@@ -92,7 +92,7 @@ const url = process.argv[2] || 'http://localhost:8765/', FIX = path.join(__dirna
       // ---- session round trip ----
       const [dl] = await Promise.all([p.waitForEvent('download'), p.click('[data-exp="json"]')]);
       const sess = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
-      check('session saves roles, materials and balance inputs', sess.version === '0.2.0-alpha.4' && sess.bodies.map(b => b.role).join() === 'hub,,ignore,boundary,cw,' && sess.balance.pin.src === 'typed' && sess.balance.load.kind === 'body' && sess.balance.rpm === 6000 && sess.balance.added.mode === 'custom', JSON.stringify(sess.balance));
+      check('session saves roles, materials and balance inputs', sess.version === '0.2.0-alpha.5' && sess.bodies.map(b => b.role).join() === 'hub,,ignore,boundary,cw,' && sess.balance.pin.src === 'typed' && sess.balance.load.kind === 'body' && sess.balance.rpm === 6000 && sess.balance.added.mode === 'custom', JSON.stringify(sess.balance));
       const before = await S(), f1 = path.join(os.tmpdir(), 'rab-020-session.json'), f2 = path.join(os.tmpdir(), 'rab-020-legacy.json');
       fs.writeFileSync(f1, JSON.stringify(sess));
       const legacy = { ...sess, version: '0.1.8-alpha', bodies: sess.bodies.map(({ role, mat, ...b }) => b) }; delete legacy.balance; fs.writeFileSync(f2, JSON.stringify(legacy));

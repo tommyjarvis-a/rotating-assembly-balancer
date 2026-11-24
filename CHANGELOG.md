@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.0-alpha.5 — 2026-11-24 (alpha)
+
+Slice 3: export of the generated counterweight and STL import (re-import for check mode).
+- **Export** (section 2c, worker with progress and Cancel, blob-URL downloads): binary STL (default) or ASCII STL, and
+  STEP AP214 (AUTOMOTIVE_DESIGN) as a **faceted** solid — FACETED_BREP of planar FACE_SURFACEs with triangular
+  POLY_LOOPs (the form shown to re-import with exact volume; not FACE + POLY_LOOP, not TESSELLATED_SOLID), mm, absolute
+  model coordinates, product / body `Generated_CW`, density as a per-product measure. Optional *with hub*: hub
+  tessellation + piece as two separate bodies in one STEP. Zero-area facets are left out of the STEP (counted).
+- **STL import**: binary and ASCII, size (256 MB) and triangle (5 M) guards, finite / |x| ≤ 1e7 mm coordinates, parsed,
+  welded, closure-checked and measured in `src/stl-worker.js`; *STL units* mm (default) / cm / m / inch. The body
+  becomes a Counterweight (existing) with the added-material density (density source `added material`, allowed by the
+  session schema); open / non-manifold STLs are warned, inside-out ones flipped; a warning if the generated piece is
+  still present (both would count).
+- **Faceted STEP import**: a FACETED_BREP-only file without curved surfaces is read in one pass (its mesh is the exact
+  solid, ± 0), e.g. 18k triangles in ~9 s instead of four passes.
+- **About** section: STEP export is faceted (planar triangles, not B-spline surfaces); NX imports it as a faceted or
+  sewn solid.
+- Small fixes: the generated-piece readout says "Piece *Generated CW*" (was "Generated *Generated CW*").
+- Hardening: export / STL names are printable ASCII (`safeName`), STL names and errors are escaped in cards, no
+  inline scripts or styles; blob downloads and the two new module workers (`stl-worker`, `export-worker`, from 'self')
+  run under the unchanged CSP with no violations.
+- Tests: 94 Node tests (92 pass, 2 optional OCP checks skipped), new `test/export024.test.mjs` (6): faceted STEP round
+  trip of a generated piece (volume, mass via the written density, CG; ≤ 1e-6 / 1e-4 mm), hub + piece as two bodies,
+  STL binary / ASCII round trip and units, STL guards, planar-faceted detection, session density source;
+  `tools/ui-smoke-024.cjs` (Playwright, 20 checks, also run locally on the NX test file: export → re-import → check
+  mode PASS for STL and STEP with a check-mode tolerance above that file's ± — `CHKTOL=6`, as its residual is
+  0.0095 ± 5.08 g·mm; the generator verdict there is CAN'T RESOLVE at the default 0.0795 g·mm, M10; nothing derived
+  from that file is committed). The generator's containment step (alpha.4) replaces the parked chord snapping:
+  measured protrusion 0 mm on that file (alpha.3 dip ≤ 0.161 mm).
+
 ## 0.2.0-alpha.4 — 2026-11-24 (alpha)
 
 Fix build for the alpha.3 gate (NO-GO: M10, M11, L12–L15). The STL / faceted-STEP export moves to 0.2.0-alpha.5.

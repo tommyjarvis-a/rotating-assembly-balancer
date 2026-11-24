@@ -3,7 +3,7 @@ import { MATERIALS, CUSTOM, validRho } from './materials.js';
 // 0.2.0-alpha.2 (H4): schema checks for everything a session file can put back into the app. Restored values are
 // type-checked, finite numbers in range, and strings from an allowlist or length-capped; anything else is dropped
 // (the current value or the default stays) and counted so the session card can say so.
-export const BODY_SRC = ['STEP', 'STEP (file)', 'default', 'user'];
+export const BODY_SRC = ['STEP', 'STEP (file)', 'default', 'user', 'added material'];
 export const TOOL_ROLES = ['counterweight', 'swinglink'];
 export const MAX_NAME = 80, MAX_PTS = 2000, MAX_ABS = 1e7;
 const fin = v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= MAX_ABS;

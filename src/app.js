@@ -16,9 +16,10 @@ import { autoBand, faceBand, typedBand } from './band.js';
 import { defaultCell } from './generator.js';
 import { containTol } from './contain.js';
 import { meshMoments } from './mass.js';
+import { safeName } from './mesh-export.js';
 import { GEN_SESSION_MAX, packGenerated, unpackGenerated, genDefaultTol } from './gen-session.js';
 
-const VERSION = '0.2.0-alpha.4', $ = s => document.querySelector(s);
+const VERSION = '0.2.0-alpha.5', $ = s => document.querySelector(s);
 // Without WebGL (blocked, no GPU and no software fallback) everything but the 3-D view still works.
 let view; try { view = createView($('#view')); } catch (e) {
   view = new Proxy({}, { get: () => () => null }); queueMicrotask(() => card('err', `<b>3-D view unavailable</b>: WebGL could not start (${esc(e.message)}). Mass properties, balancing and export still work; enable hardware acceleration in the browser settings for the view.`));
@@ -56,6 +57,32 @@ function runImport(f, buf) {
   });
 }
 
+// ---------- STL import (0.2.0-alpha.5): parsed in a worker; the body becomes a Counterweight (existing) ----------
+function runStl(f, buf, unit) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./stl-worker.js', import.meta.url), { type: 'module' }), t0 = performance.now(); let stage = 'Starting', done = false;
+    const finish = (fn, v) => { if (done) return; done = true; clearInterval(tick); w.terminate(); job = null; $('#job').hidden = true; fn(v); };
+    const tick = setInterval(() => { const s = (performance.now() - t0) / 1000; $('#jobmsg').textContent = `${f.name}: ${stage}… ${s.toFixed(0)} s`; if (s > TIMEOUT_S) finish(reject, new Error(`timed out after ${TIMEOUT_S} s`)); }, 250);
+    job = { cancel: () => finish(reject, Object.assign(new Error('cancelled'), { cancelled: true })) };
+    $('#job').hidden = false; $('#jobmsg').textContent = `${f.name}: starting…`;
+    w.onmessage = ({ data: d }) => { if (d.type === 'progress') stage = d.stage; else if (d.type === 'done') finish(resolve, d); else if (d.type === 'error') finish(reject, new Error(d.message)); };
+    w.onerror = e => { e.preventDefault?.(); finish(reject, new Error(e.message || 'STL worker failed (out of memory?)')); };
+    w.postMessage({ buf, unit }, [buf]);
+  });
+}
+async function loadStl(f) {
+  const unit = $('#stlunit').value, d = await runStl(f, await f.arrayBuffer(), unit);
+  const hub = st.bodies.find(b => roleOf(b) === 'hub'), am = addedMaterial(st.bal.added, hub), rho = am?.rho ?? +$('#defrho').value;
+  const b = { name: safeName(f.name.replace(/\.stl$/i, ''), 'STL body'), stepName: d.name || '(STL)', product: '', file: f.name, pos: d.pos, idx: d.idx, vol: d.vol, rho, sign: 1, on: true,
+    src: am ? 'added material' : 'default', mat: materialId(rho), role: 'cw', faces: [], unc: null, mesh: { tris: d.tris, deflection: 0, coarsened: false, stl: unit } };
+  const g = st.bodies.findIndex(x => x.generated), gb = g >= 0 ? st.bodies.splice(g, 1)[0] : null;
+  uniqueNames([b], st.bodies); st.bodies.push(b); if (gb) st.bodies.push(gb);
+  if (d.open || d.nonManifold) card('warn', `${esc(f.name)}: the STL is not a closed solid (${esc(d.open)} open, ${esc(d.nonManifold)} non-manifold edges) — its volume and CG are not reliable.`);
+  if (d.flipped) card('info quiet', `${esc(f.name)}: the STL was inside-out; its orientation was flipped.`);
+  if (gb) card('warn', `${esc(f.name)}: imported as a Counterweight (existing) while <i>${esc(gb.name)}</i> is still present — both count in check mode; remove one.`);
+  status(`${f.name}: STL · ${d.tris} triangles · ${unit} · Counterweight (existing) · ${am ? 'added material' : 'default'} ${rho} kg/m³`);
+}
+
 let busy = false;
 async function loadFiles(files) {
   if (busy) return status('An import is already running — cancel it first');
@@ -64,6 +91,10 @@ async function loadFiles(files) {
   try {
     for (const f of files) {
       if (/\.json$/i.test(f.name)) { loadSession(JSON.parse(await f.text())); loadedSession = true; continue; }
+      if (/\.stl$/i.test(f.name)) {
+        try { await loadStl(f); } catch (e) { if (e.cancelled) { status(`${f.name}: import cancelled`); break; } card('err', `<b>Could not import ${esc(f.name)}</b>: ${esc(e.message)}`); status(`${f.name}: import failed`); }
+        continue;
+      }
       let r;
       try { r = await runImport(f, await f.arrayBuffer()); }
       catch (e) { if (e.cancelled) { status(`${f.name}: import cancelled`); break; } card('err', `<b>Could not import ${esc(f.name)}</b>: ${esc(e.message)}`); status(`${f.name}: import failed`); continue; }
@@ -237,6 +268,8 @@ $('#panel').addEventListener('input', e => {
 });
 $('#panel').addEventListener('change', e => {
   const el = e.target, card = el.closest('.tool');
+  if (el.id === 'expfmt') { $('#exphubl').hidden = el.value !== 'step'; return; }
+  if (el.id === 'stlunit' || el.id === 'exphub') return;
   if (el.dataset.on) { const i = +el.dataset.on; st.bodies[i].on = el.checked; view.showBody(i, el.checked); return update(); }
   if (el.id === 'axis') { const v = el.value; if (PRESET[v]) setAxis({ p: st.axis.p, d: PRESET[v] }, v); else if (v[0] === 'P') setAxis(principal(+v.slice(1)), v); else axmsg('custom axis: type the point and direction, or pick it in the 3-D view'); return; }
   if (/^[od][xyz]$/.test(el.id)) return typedAxis();
@@ -291,6 +324,8 @@ $('#panel').addEventListener('click', e => {
   if (el.id === 'gen') runGen();
   if (el.id === 'gcancel') gjob?.cancel();
   if (el.id === 'genremove') removeGenerated();
+  if (el.id === 'genexport') exportGen();
+  if (el.id === 'xcancel') xjob?.cancel();
   if (el.id === 'copytable') copyNX();
   if (el.id === 'pinclear') { st.bal.pin = null; st.pinNote = ''; pinmsg(''); renderBalanceInputs(); update(); }
   if (el.id === 'ptcg') { const r = assemblyCG(st.bodies, st.sels); if (r.error) axmsg(r.error === 'none' ? 'select one or more bodies first, then snap the point to their CG' : 'net mass of the selection is not positive', true); else setAxis({ p: r.c, d: st.axis.d }, 'C', `axis point = CG of ${r.n} selected bod${r.n === 1 ? 'y' : 'ies'}; direction kept`); }
@@ -513,7 +548,7 @@ function renderGen(S, sp) {
   }
   const T = S.target?.planes[0];
   $('#gendef').textContent = S.hub && Bd ? `default cell ${fmt(defaultCell(bbDiag(Bd)), 3)} mm · leftover tolerance ${fmt(genTol(S).tol, 4)} g·mm (${genTol(S).how})${T ? ` · needed ${fmt(T.mag, 5)} g·mm at ${ang(T.ang)}` : ''}${S.unc && genTol(S).tol < S.unc.base ? ` · ⚠ the tolerance is below the input uncertainty ± ${fmt(S.unc.base, 3)} g·mm (hub + load): the verdict will be "can't resolve" — loosen it or use a finer mesh` : ''}` : 'set one Hub and one Boundary to generate';
-  const g = genBody(); $('#genremove').hidden = !g;
+  const g = genBody(); $('#genremove').hidden = !g; $('#genexp').hidden = !g; $('#exphubl').hidden = $('#expfmt').value !== 'step';
   const el = $('#genout'); if (!g && !st.gen?.needsRegenerate) { el.innerHTML = ''; return; }
   if (!g) { el.innerHTML = `<p class="flag">⚠ ${esc(st.gen.note || 'regenerate the counterweight')}</p>`; return; }
   const r = st.gen?.meta || {}, v = st.gen?.verify || null, mom = bodyMoments(g), Sg = staticOf(mom, st.axis), pin = S.pin, d = derive(g.vol);
@@ -537,7 +572,7 @@ function renderGen(S, sp) {
     <div>${cline}</div>
     <div class="hint">± = input uncertainty: hub ${fmt(S.unc?.hub || 0, 3)} + load ${fmt(S.unc?.load || 0, 3)} g·mm from the bodies' mass-property ± (the piece's own mesh is exact).</div>
     <div class="hint">${r.cells ? `${esc(r.cells)} cells of ${fmt(r.cell, 3)} × ${fmt(r.cell, 3)} × ${fmt(r.cellW, 3)} mm · ${esc(r.iterations)} mesh iteration${r.iterations === 1 ? '' : 's'} · ${esc(r.tris)} triangles · ${esc(r.components)} piece${r.components === 1 ? '' : 's'}${r.open ? `, ${esc(r.open)} open edges` : ', closed'} · ` : 'restored from the session (containment and hub contact re-measured) · '}${hline}${r.cells ? ` · inside hub ${esc(r.insideHub)}, outside band ${esc(r.outsideBand)} · ${esc(r.inset || 0)} vertices inset by ${fmt(r.margin || 0, 3)} mm, ${esc(r.split || 0)} edges split · ${fmt(r.ms / 1000, 3)} s` : ''}${r.notes?.length ? ' · ' + esc(r.notes.join('; ')) : ''}</div>
-    <div class="hint">The piece is a Counterweight in check mode above and a row in the body table. No export yet.</div>`;
+    <div class="hint">The piece is a Counterweight in check mode above and a row in the body table. Export it below (STL or faceted STEP, mm, model coordinates).</div>`;
 }
 let gjob = null;
 // L14 contact, M11 margin and the Check-containment tolerance (same as runContain). Hub contact is judged within the
@@ -593,6 +628,31 @@ function verifyGen() {
   w.onerror = e => { e.preventDefault?.(); w.terminate(); if (st.gen === me) { me.verify = { pending: false, contained: null, error: 'worker failed' }; update(); } };
   const bd = xfer(Bd), hb = xfer(S.hub), pc = xfer(g);
   w.postMessage({ verify: { boundary: bd, hub: hb, pos: pc.pos, idx: pc.idx, tol: t.checkTol, contactTol: t.contactTol } }, [bd.pos.buffer, bd.idx.buffer, hb.pos.buffer, hb.idx.buffer, pc.pos.buffer, pc.idx.buffer]);
+}
+// ---------- export of the generated piece (0.2.0-alpha.5): worker, Cancel, blob-URL download ----------
+let xjob = null;
+function exportGen() {
+  const g = genBody(), msg = (m, bad) => { $('#expmsg').textContent = m; $('#expmsg').className = 'hint' + (bad ? ' bad' : ''); };
+  if (!g) return msg('generate a counterweight first', true); if (xjob) return msg('an export is already running', true);
+  const kind = $('#expfmt').value, hub = kind === 'step' && $('#exphub').checked ? balanceState().hub : null, nm = safeName(g.name, 'counterweight');
+  const bodies = [{ name: nm, pos: Float64Array.from(g.pos), idx: Uint32Array.from(g.idx), rho: g.rho }];
+  if (hub) bodies.unshift({ name: safeName(hub.name, 'hub'), pos: Float64Array.from(hub.pos), idx: Uint32Array.from(hub.idx), rho: hub.rho });
+  const file = kind === 'step' ? `${hub ? safeName(hub.name, 'hub') + '+' : ''}${nm}.stp` : `${nm}${kind === 'stla' ? '_ascii' : ''}.stl`;
+  const w = new Worker(new URL('./export-worker.js', import.meta.url), { type: 'module' }), t0 = performance.now(); let frac = 0, done = false;
+  const finish = () => { if (done) return; done = true; clearInterval(tick); w.terminate(); xjob = null; $('#xjob').hidden = true; $('#genexport').disabled = false; };
+  const tick = setInterval(() => { $('#xjobmsg').textContent = `Exporting ${file}… ${((performance.now() - t0) / 1000).toFixed(0)} s`; $('#xprog').value = frac; }, 200);
+  xjob = { cancel: () => { finish(); msg('export cancelled'); } }; $('#xjob').hidden = false; $('#genexport').disabled = true; msg('');
+  w.onmessage = ({ data: d }) => {
+    if (d.type === 'progress') frac = d.frac;
+    else if (d.type === 'error') { finish(); msg('export: ' + d.message, true); }
+    else if (d.type === 'done') {
+      finish(); const size = typeof d.data === 'string' ? d.data.length : d.data.byteLength;
+      save(file, d.data, kind === 'step' ? 'application/step' : 'model/stl'); st.lastExport = { file, size, kind };
+      msg(`exported ${file} (${(size / 1024).toFixed(0)} kB${hub ? ', hub + piece as separate bodies' : ''}${d.skipped ? `, ${d.skipped} zero-area facets left out` : ''})`);
+    }
+  };
+  w.onerror = e => { e.preventDefault?.(); finish(); msg('export worker failed: ' + (e.message || 'out of memory?'), true); };
+  w.postMessage({ kind, bodies, name: hub ? 'hub_and_counterweight' : nm });
 }
 const uniqueGenName = () => { let n = 'Generated CW', k = 2; while (st.bodies.some(b => b.name === n)) n = `Generated CW ${k++}`; return n; };
 function dropGenerated() { const i = st.bodies.findIndex(b => b.generated); if (i < 0) return false; st.bodies.splice(i, 1); st.sels = st.sels.filter(j => j !== i).map(j => j > i ? j - 1 : j); st.sel = st.sels.at(-1) ?? -1; st.gen = null; return true; }
@@ -702,4 +762,4 @@ document.addEventListener('drop', e => loadFiles([...e.dataTransfer.files]).catc
 $('#file').addEventListener('change', e => loadFiles([...e.target.files]).catch(err => status('Error: ' + err.message)));
 renderAxis(); setAxis(st.axis, 'Z');
 renderBalanceInputs(); renderNX();
-window.rab = { st, view, nxTSV, balanceState, genKey }; // test hook (tools/ui-smoke.cjs)
+window.rab = { safeName, st, view, nxTSV, balanceState, genKey }; // test hook (tools/ui-smoke.cjs)

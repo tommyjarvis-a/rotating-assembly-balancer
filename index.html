@@ -9,17 +9,18 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.4</small><span id="status">Drop STEP files to start</span></header>
+<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.5</small><span id="status">Drop STEP files to start</span></header>
 <main>
 <aside id="panel">
   <section>
     <h2>1 · Import</h2>
-    <label id="drop" class="drop">Drop STEP (.stp/.step) or session .json here, or <u>browse</u>
-      <input id="file" type="file" accept=".stp,.step,.json" multiple hidden></label>
+    <label id="drop" class="drop">Drop STEP (.stp/.step), STL (.stl) or session .json here, or <u>browse</u>
+      <input id="file" type="file" accept=".stp,.step,.stl,.json" multiple hidden></label>
     <div id="job" class="card info" hidden><span id="jobmsg"></span> <button id="cancel">Cancel</button></div>
     <div id="cards"></div>
     <div class="row"><label title="accurate = two tessellations + Richardson extrapolation">Mass props <select id="quality"><option value="accurate" selected>accurate (2-pass)</option><option value="fast">fast</option></select></label>
-      <label>Default <select id="defrho"><option value="7850">Steel 7850</option><option value="2700">Aluminium 2700</option><option value="7200">Cast iron 7200</option><option value="8900">Copper 8900</option></select> kg/m³</label></div>
+      <label>Default <select id="defrho"><option value="7850">Steel 7850</option><option value="2700">Aluminium 2700</option><option value="7200">Cast iron 7200</option><option value="8900">Copper 8900</option></select> kg/m³</label>
+      <label title="Length unit of STL files (STL carries none)">STL units <select id="stlunit"><option value="mm" selected>mm</option><option value="cm">cm</option><option value="m">m</option><option value="in">inch</option></select></label></div>
     <table id="bodies" title="Click a row (or a body in the 3-D view) to select it; Ctrl/⌘-click to add or remove, Shift-click a range; Esc deselects"><thead><tr><th></th><th>Body</th><th title="Balance role: Hub (one), Boundary (one), Counterweight (existing, any number), Ignore; and material preset">Role / material</th><th>ρ kg/m³</th><th>Mass g</th></tr></thead><tbody></tbody></table>
     <div class="row cgrow"><button id="calcg">Calculate CG</button><div id="cgout" class="hint">Select one or more bodies (Ctrl-click or Shift-click to add), then Calculate CG.</div></div>
   </section>
@@ -61,6 +62,9 @@
     <div class="row"><button id="gen" title="Run the generator in a worker">Generate counterweight</button> <button id="genremove" hidden title="Delete the generated piece">Remove generated</button> <span id="genmsg" class="hint"></span></div>
     <div id="gjob" class="card info" hidden><span id="gjobmsg"></span> <progress id="gprog" max="1" value="0"></progress> <button id="gcancel">Cancel</button></div>
     <div id="genout" class="statout"></div>
+    <div class="row" id="genexp" hidden><label title="Export the generated piece in absolute model coordinates, mm">Export <select id="expfmt"><option value="stl" selected>STL (binary)</option><option value="stla">STL (ASCII)</option><option value="step">STEP AP214 (faceted)</option></select></label>
+      <label id="exphubl" title="STEP only: also write the hub (its tessellation) as a separate body"><input id="exphub" type="checkbox"> with hub</label> <button id="genexport">Export piece</button> <span id="expmsg" class="hint"></span></div>
+    <div id="xjob" class="card info" hidden><span id="xjobmsg"></span> <progress id="xprog" max="1" value="0"></progress> <button id="xcancel">Cancel</button></div>
   </section>
   <section>
     <h2>Body table (compare with NX Measure Bodies)</h2>
@@ -85,6 +89,13 @@
   <section>
     <h2>5 · Export</h2>
     <div class="row"><button data-exp="json">Parameters JSON</button><button data-exp="csv">CSV</button><button data-exp="step">Counterweights STEP</button></div>
+  </section>
+  <section>
+    <details id="about"><summary>About</summary>
+      <p class="hint">Rotating Assembly Balancer, an alpha tool: STEP import, static / couple balance, counterweight set-up, generation and check.</p>
+      <p class="hint" id="aboutstep"><b>STEP export of the generated piece is faceted</b> for now: planar triangles (FACETED_BREP of planar faces), not B-spline surfaces. NX imports it as a faceted or sewn solid; its volume and CG match the in-app piece. STL export is the same triangles. Both are in mm, in absolute model coordinates, so the piece lands in place.</p>
+      <p class="hint">STL import: binary or ASCII, up to 256 MB / 5 M triangles, parsed in a worker; choose the STL units (default mm). An imported STL gets the Counterweight (existing) role and the added-material density, so a re-imported piece is checked in check mode.</p>
+    </details>
   </section>
   <footer>Client-side only — files never leave this browser. <a href="THIRD_PARTY.md">Licenses</a> · <a href="https://github.com/kovacsv/occt-import-js">occt-import-js source</a></footer>
 </aside>

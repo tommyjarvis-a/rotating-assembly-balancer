@@ -179,6 +179,10 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - `tools/ui-smoke-020a4.cjs` (0.2.0-alpha.4): residual ± U and CAN'T RESOLVE, generator containment == Check
   containment, hub contact, a tampered restored piece re-measured (outside, FAIL, red marks), invalid assembly CG,
   malicious session, Long Tasks observer (< 100 ms).
+- `tools/ui-smoke-024.cjs` (0.2.0-alpha.5): export (binary / ASCII STL, faceted STEP, hub + piece) as blob-URL downloads,
+  re-import of each as a Counterweight (existing) with volume / mass / CG matching and check mode PASS, STL guards,
+  hostile STL names, About note, no CSP violations. `STP=/path/file.stp HUB=n BND=m [CHKTOL=g·mm]` runs it on any local file
+  (1-based body rows); downloads go to a temp dir, nothing is written into the repo.
 
 ## Size, dependencies, token/code efficiency
 
@@ -194,7 +198,7 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - All mass properties are kept as additive raw moments (m, ∫r dm, ∫rrᵀ dm), so assemblies, tools, removal and
   axis changes are sums and one frame transform — the optimiser evaluates thousands of candidates per second
   without remeshing. Tool meshes are only for display.
-- One small module per concern (`mass`, `imbalance`, `tools`, `nm`, `optimize`, `step-export`, `step-meta`, `fit`, `view`,
+- One small module per concern (`mass`, `imbalance`, `tools`, `nm`, `optimize`, `step-export`, `mesh-export`, `stl`, `step-meta`, `fit`, `view`,
   `app`) to keep future edits and reviews cheap.
 
 ## Counterweight setup (0.2.0-alpha.1, slice 1)
@@ -247,12 +251,21 @@ Section **2c · Generate counterweight** (needs one Hub and one Boundary; the dr
    0.2.0-alpha.4: the piece is kept inside the Boundary (margin = boundary mesh deflection) and verified with the
    Check-containment function; leftover is shown as X ± U with PASS / FAIL / CAN'T RESOLVE (see Limitations).
 4. The piece (magenta) is a Counterweight in check mode (residual, PASS / FAIL, *Check containment*) and a row in the
-   body table; it is saved in sessions. *Remove generated* deletes it. No STEP export yet (slice 3).
+   body table; it is saved in sessions. *Remove generated* deletes it.
+5. **Export** (0.2.0-alpha.4) — binary STL (default), ASCII STL or STEP AP214, in mm and absolute model coordinates (it
+   lands in place in NX), named `Generated_CW`. The STEP is **faceted**: one FACETED_BREP whose faces are planar
+   FACE_SURFACEs bounded by triangular POLY_LOOPs (not B-spline surfaces; NX imports it as a faceted or sewn solid),
+   with the density written per product. *with hub* writes the hub's tessellation and the piece as two separate
+   bodies in one STEP. Runs in a worker with Cancel; downloads are blob URLs.
+6. **STL import** — binary or ASCII (≤ 256 MB, ≤ 5 M triangles), parsed and welded in a worker; choose *STL units*
+   (default mm). The body gets the Counterweight (existing) role and the added-material density, so a re-imported
+   piece is judged in check mode (remove the generated piece first, or both count). Open / inside-out STLs are
+   reported (inside-out ones are flipped). A planar faceted STEP (this export) is read in one exact pass.
 
 ## Limitations (0.2.0-alpha.4)
 
 - The generator is static only (one correction plane); the solver API (`correctionTarget` in `src/statics.js`) takes
-  a list of correction planes for two-plane later. The generated piece is not exported yet (slice 3). The orbiting
+  a list of correction planes for two-plane later. The orbiting
   load is a point mass; it is not in the couple.
 - The generator balances hub + orbiting load only; existing Counterweight bodies are not subtracted from its target
   (check mode adds them all up, so use one or the other).
@@ -265,6 +278,9 @@ Section **2c · Generate counterweight** (needs one Hub and one Boundary; the dr
   tolerance). With loose CAD tolerances U can be several g·mm, so a tight tolerance reads CAN'T RESOLVE: use a finer
   import (accurate mode) or a looser tolerance. The generator's own leftover after the containment step can end
   slightly above a very tight tolerance (shown; it then reads FAIL or CAN'T RESOLVE).
+- STEP export is faceted (planar triangles), not a B-spline / analytic B-rep, and the file is large (~400 bytes per
+  triangle: ~1.6 MB for a 4k-triangle piece). Binary STL has float32 coordinates (~1e-5 relative). Re-importing a
+  faceted STEP costs ~0.4 ms per triangle in OpenCascade.
 - Mass is near-minimal for the voxel grid (greedy by lever arm + margin refinement), not a proven optimum.
 - Per-body meshing needs a file without assembly structure (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) whose
   solids map 1:1 onto meshes; otherwise the whole-file plan of 0.1.x is used. It adds a calibration probe and up to
