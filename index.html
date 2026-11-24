@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.2</small><span id="status">Drop STEP files to start</span></header>
+<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.3</small><span id="status">Drop STEP files to start</span></header>
 <main>
 <aside id="panel">
   <section>
@@ -35,7 +35,7 @@
   </section>
   <section id="balance">
     <h2>2b · Hub static balance</h2>
-    <div class="row"><label title="Material of the counterweight the generator will add (slice 2); defaults to the hub's material">Added material <select id="added"></select></label><input id="addedrho" type="number" step="any" min="0" placeholder="kg/m³" hidden title="Custom density, kg/m³"> <span id="addedinfo" class="hint"></span></div>
+    <div class="row"><label title="Material of the counterweight the generator adds; defaults to the hub's material">Added material <select id="added"></select></label><input id="addedrho" type="number" step="any" min="0" placeholder="kg/m³" hidden title="Custom density, kg/m³"> <span id="addedinfo" class="hint"></span></div>
     <div class="row"><span class="picks">Drive pin <button data-pick="pin" title="Click the eccentric pin's cylindrical face">pick pin cylinder</button></span>
       <label title="Orbit radius: perpendicular distance from the pin axis to the spin axis">e <input id="pine" type="number" step="any" min="0" placeholder="mm"> mm</label>
       <label title="Pin angle in the spin-axis frame (0° = +u, 90° = +v)">∠ <input id="pinang" type="number" step="any" placeholder="°">°</label><button id="pinclear" title="Remove the pin">✕</button></div>
@@ -47,6 +47,20 @@
     <div id="checkout" class="statout"></div>
     <div class="row"><button id="contain" title="Check that every existing counterweight body lies inside the Boundary (runs in a worker)">Check containment</button> <span id="containmsg" class="hint"></span></div>
     <div id="cjob" class="card info" hidden><span id="cjobmsg"></span> <button id="ccancel">Cancel</button></div>
+  </section>
+  <section id="generate">
+    <h2>2c · Generate counterweight</h2>
+    <p class="hint">Adds one connected piece of the added material, touching the hub, inside the Boundary and the axial band, that cancels hub + orbiting load (static).</p>
+    <div class="row"><label title="Where along the axis material may go">Axial band <select id="bandmode"><option value="auto">auto: hub next to the pin</option><option value="face">planar face + thickness</option><option value="typed">typed start / end</option></select></label>
+      <span id="bandface" hidden><button data-pick="band" title="Click a planar face square to the axis">pick face</button> <label title="Thickness along the axis direction from the face (sign = side)">t <input id="bandt" type="number" step="any" placeholder="mm"> mm</label></span>
+      <span id="bandtyped" hidden><label title="Band start, mm along the axis from the axis point">from <input id="band0" type="number" step="any" placeholder="mm"></label> <label title="Band end, mm along the axis from the axis point">to <input id="band1" type="number" step="any" placeholder="mm"></label></span></div>
+    <div id="bandmsg" class="hint"></div>
+    <div class="row"><label title="Voxel cell size (blank = default from the boundary size)">Cell <input id="gencell" type="number" step="any" min="0" placeholder="auto"> mm</label>
+      <label title="Allowed leftover |U| after generation (blank = from G grade + RPM if set, else a small default)">Leftover tol <input id="gentol" type="number" step="any" min="0" placeholder="auto"> g·mm</label></div>
+    <div id="gendef" class="hint"></div>
+    <div class="row"><button id="gen" title="Run the generator in a worker">Generate counterweight</button> <button id="genremove" hidden title="Delete the generated piece">Remove generated</button> <span id="genmsg" class="hint"></span></div>
+    <div id="gjob" class="card info" hidden><span id="gjobmsg"></span> <progress id="gprog" max="1" value="0"></progress> <button id="gcancel">Cancel</button></div>
+    <div id="genout" class="statout"></div>
   </section>
   <section>
     <h2>Body table (compare with NX Measure Bodies)</h2>

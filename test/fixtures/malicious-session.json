@@ -1,6 +1,6 @@
 {
  "app": "rotating-assembly-balancer",
- "version": "0.2.0-alpha.2",
+ "version": "0.2.0-alpha.3",
  "units": {
   "length": "mm",
   "mass": "g",
@@ -198,7 +198,28 @@
    "kind": "gmm",
    "value": null
   },
-  "note": "angles in degrees in the spin-axis frame (0° = +u, 90° = +v, right-handed about the axis direction); e in mm; masses in g"
+  "note": "angles in degrees in the spin-axis frame (0° = +u, 90° = +v, right-handed about the axis direction); e in mm; masses in g",
+  "band": {
+   "mode": "typed",
+   "start": "<img src=x onerror=\"window.__xss='bandStart'\">",
+   "end": 5,
+   "face": {
+    "p": [
+     "<img src=x onerror=\"window.__xss='face'\">",
+     0,
+     0
+    ],
+    "d": [
+     0,
+     0,
+     1
+    ]
+   }
+  },
+  "gen": {
+   "cell": "<img src=x onerror=\"window.__xss='cell'\">",
+   "tol": -1
+  }
  },
  "tools": [
   {
@@ -315,5 +336,24 @@
   "mass": 1,
   "bodies": [],
   "stale": false
+ },
+ "generated": {
+  "name": "<img src=x onerror=\"window.__xss='genName'\">",
+  "rho": 7850,
+  "mat": "<img src=x onerror=\"window.__xss='genMat'\">",
+  "on": "<img src=x onerror=\"window.__xss='genOn'\">",
+  "meta": {
+   "cells": "<img src=x onerror=\"window.__xss='cells'\">",
+   "iterations": 2,
+   "notes": [
+    "<img src=x onerror=\"window.__xss='note'\">"
+   ],
+   "key": "k",
+   "tris": 4
+  },
+  "mesh": {
+   "pos": "AAAAAAAAPkAAAAAAAAAUwAAAAAAAAAAAAAAAAAAAREAAAAAAAAAUwAAAAAAAAAAAAAAAAACAQUAAAAAAAAAUQAAAAAAAAAAAAAAAAACAQUAAAAAAAAAAAAAAAAAAACBA",
+   "idx": "AAAAAAIAAAABAAAAAAAAAAEAAAADAAAAAQAAAAIAAAADAAAAAgAAAAAAAAADAAAA"
+  }
  }
 }

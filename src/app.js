@@ -12,13 +12,17 @@ import { movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout,
 import { faceTris, fitCylinderTris, fitPlane } from './fit.js';
 import { BALANCE_DEFAULT, exportBalance, restoreBalance } from './balance-session.js';
 import { cleanTool } from './session-schema.js';
+import { autoBand, faceBand, typedBand } from './band.js';
+import { defaultCell } from './generator.js';
+import { meshMoments } from './mass.js';
+import { GEN_SESSION_MAX, packGenerated, unpackGenerated, genDefaultTol } from './gen-session.js';
 
-const VERSION = '0.2.0-alpha.2', $ = s => document.querySelector(s);
+const VERSION = '0.2.0-alpha.3', $ = s => document.querySelector(s);
 // Without WebGL (blocked, no GPU and no software fallback) everything but the 3-D view still works.
 let view; try { view = createView($('#view')); } catch (e) {
   view = new Proxy({}, { get: () => () => null }); queueMicrotask(() => card('err', `<b>3-D view unavailable</b>: WebGL could not start (${esc(e.message)}). Mass properties, balancing and export still work; enable hardware acceleration in the browser settings for the view.`));
 }
-const st = { bodies: [], tools: [], last: null, undo: null, sel: -1, sels: [], axis: { p: [0, 0, 0], d: [0, 0, 1], src: 'Z' }, pick: null, cg: null, bal: BALANCE_DEFAULT(), check: null, generated: null };
+const st = { bodies: [], tools: [], last: null, undo: null, sel: -1, sels: [], axis: { p: [0, 0, 0], d: [0, 0, 1], src: 'Z' }, pick: null, cg: null, bal: BALANCE_DEFAULT(), check: null, gen: null };
 const fmt = (v, d = 3) => Math.abs(v) >= 1e5 || (v && Math.abs(v) < 1e-3) ? v.toExponential(d - 1) : (+v.toFixed(d)).toString();
 const status = s => $('#status').textContent = s;
 
@@ -63,7 +67,8 @@ async function loadFiles(files) {
       try { r = await runImport(f, await f.arrayBuffer()); }
       catch (e) { if (e.cancelled) { status(`${f.name}: import cancelled`); break; } card('err', `<b>Could not import ${esc(f.name)}</b>: ${esc(e.message)}`); status(`${f.name}: import failed`); continue; }
       for (const b of r.bodies) { b.role = ''; b.mat = materialId(b.rho); }
-      uniqueNames(r.bodies, st.bodies); st.bodies.push(...r.bodies);
+      const g = st.bodies.findIndex(b => b.generated), gb = g >= 0 ? st.bodies.splice(g, 1)[0] : null; // the generated piece stays last
+      uniqueNames(r.bodies, st.bodies); st.bodies.push(...r.bodies); if (gb) st.bodies.push(gb);
       for (const w of r.warn) card('warn', `${esc(f.name)}: ${esc(w)}`);
       for (const w of r.info) card('info quiet', `${esc(f.name)}: ${esc(w)}`);
       const nrem = r.bodies.filter(b => b.sign < 0).length, s = r.stats;
@@ -72,7 +77,7 @@ async function loadFiles(files) {
   } finally { busy = false; }
   // A session restore already set selection and CG; do not clear them (and do not re-fit, which would jump the camera).
   if (!loadedSession) { st.sel = -1; st.sels = []; }
-  view.setBodies(st.bodies); view.setRoles(st.bodies.map(roleOf)); if (!loadedSession) view.fit(); renderBodies(); renderAxis(); renderBalanceInputs(); update();
+  view.setBodies(st.bodies); view.setRoles(viewRoles()); if (!loadedSession) view.fit(); renderBodies(); renderAxis(); renderBalanceInputs(); update();
   if (loadedSession) { view.select(st.sels); renderCG(); }
 }
 
@@ -138,6 +143,7 @@ function update() {
 
 // ---------- UI ----------
 const srcText = b => `${b.sign < 0 ? 'removal (−m) · ' : ''}${esc(b.src)}${b.material ? ' · ' + esc(b.material) : ''} · V ${fmt(b.vol.m)} mm³${b.unc ? ` · ${b.unc.low ? '≥' : b.unc.rough ? '~' : ''}±${fmt(b.unc.dc * 1000, 2)} µm CoM` : ''}${b.mesh?.coarsened ? ' · coarsened mesh' : ''}`;
+const viewRoles = () => st.bodies.map(b => b.generated && roleOf(b) === 'cw' ? 'gen' : roleOf(b));
 const roleBadge = b => { const r = ROLES.find(x => x.id === roleOf(b)); return r?.short ? ` <span class="rb ${r.id}" title="${r.title}">${r.short}</span>` : ''; };
 const roleSel = (b, i) => `<select data-role="${i}" title="Balance role">${ROLES.map(r => `<option value="${r.id}" ${roleOf(b) === r.id ? 'selected' : ''} title="${r.title}">${r.label}</option>`).join('')}</select>`;
 const matSel = (b, i) => { const id = b.mat ?? materialId(b.rho); return `<select data-mat="${i}" title="Material preset (sets the density)">${MATERIALS.map(m => `<option value="${m.id}" ${id === m.id ? 'selected' : ''}>${m.name}</option>`).join('')}<option value="${CUSTOM}" ${id === CUSTOM ? 'selected' : ''}>Custom${id === CUSTOM ? ' ' + +gcc(b.rho).toPrecision(5) : ''}</option></select>`; };
@@ -145,7 +151,7 @@ function renderBodies() {
   $('#bodies tbody').innerHTML = st.bodies.map((b, i) => `<tr data-row="${i}" class="${st.sels.includes(i) ? 'sel' : ''}${roleOf(b) ? ' role-' + roleOf(b) : ''}"><td><input type="checkbox" data-on="${i}" ${b.on ? 'checked' : ''}></td>
     <td>${esc(b.name)}${b.unreliable ? ` <span class="bad" title="${b.open} open/non-manifold edges (${pct(b.frac)} of edges), volume closure error ${fmt(b.eps, 2)}: mesh not closed, mass properties unreliable">⚠</span>` : b.open ? ` <span class="note" title="${b.open} open/non-manifold edges (${pct(b.frac)} of edges) but the mesh closes (volume closure error ${fmt(b.eps, 2)} ≤ 1e-4): mass properties OK">ⓘ</span>` : ''}${roleBadge(b)}<div class="src" data-src="${i}">${srcText(b)}</div></td>
     <td class="rm">${roleSel(b, i)}${matSel(b, i)}</td><td><input type="number" step="any" data-rho="${i}" value="${esc(b.rho)}"></td><td data-mass="${i}">${roleOf(b) === 'boundary' ? '<span class="hint" title="Boundary: a region, not material">region</span>' : fmt(bmass(b))}</td></tr>`).join('');
-  view.setRoles(st.bodies.map(roleOf)); renderNX();
+  view.setRoles(viewRoles()); renderNX();
 }
 function renderAxis() {
   $('#axis').innerHTML = ['X', 'Y', 'Z'].map(a => `<option>${a}</option>`).join('') + st.bodies.map((b, i) => `<option value="P${i}">${esc(b.name)} principal axis</option>`).join('') + '<option value="C">custom (point + direction)</option>';
@@ -165,7 +171,7 @@ function select(i, from, ev) {
   if (i >= 0 && from === 'view') { document.querySelector(`#bodies tr[data-row="${i}"]`)?.scrollIntoView({ block: 'nearest' }); status(`Selected ${st.bodies[i].name}`); }
   touchCG();
 }
-const PICK = { cyl: 'click a cylindrical face', loop: 'click a face next to a circular edge (hole, boss, end face)', pts: 'click the first point', pt: 'click a spot on the model for the axis point', nrm: 'click a planar face for the axis direction', pin: 'click the drive pin\'s cylindrical face' };
+const PICK = { band: 'click a planar face square to the axis for the band start', cyl: 'click a cylindrical face', loop: 'click a face next to a circular edge (hole, boss, end face)', pts: 'click the first point', pt: 'click a spot on the model for the axis point', nrm: 'click a planar face for the axis direction', pin: 'click the drive pin\'s cylindrical face' };
 function pickUI() { document.querySelectorAll('[data-pick]').forEach(b => b.classList.toggle('on', b.dataset.pick === st.pick?.mode)); view.cursor(st.pick ? 'crosshair' : ''); }
 function startPick(mode) { st.pick = st.pick?.mode === mode ? null : { mode, pts: [] }; view.setPicks([]); pickUI(); axmsg(st.pick ? `Pick: ${PICK[mode]} (Esc cancels)` : ''); }
 function onPick(hit) {
@@ -179,6 +185,11 @@ function onPick(hit) {
     a.d = canon(a.d); return setAxis(a, 'C', 'axis through 2 picked points');
   }
   if (pk.mode === 'pt') return setAxis({ p: hit.point, d: st.axis.d }, 'C', `axis point picked on ${b.name}; direction kept`);
+  if (pk.mode === 'band') {
+    const ft = faceTris(b, hit.tri), r = fitPlane(b.pos, b.idx, ft.tris); st.pick = null; pickUI();
+    if (r.error) return bandmsg(r.error, true);
+    st.bal.band.face = { p: r.p, d: r.d }; st.bal.band.mode = 'face'; axmsg(''); bandmsg(`band face: planar face of ${b.name} (${ft.how})`); return update();
+  }
   if (pk.mode === 'nrm' || pk.mode === 'pin' || pk.mode === 'cyl') {
     const ft = faceTris(b, hit.tri);
     if (pk.mode === 'nrm') { const r = fitPlane(b.pos, b.idx, ft.tris); if (r.error) return axmsg(r.error, true); return setAxis({ p: st.axis.p, d: canon(r.d) }, 'C', `normal of a planar face of ${b.name} (${ft.how}); point kept`); }
@@ -242,6 +253,10 @@ $('#panel').addEventListener('change', e => {
   if (el.id === 'load') { const v = el.value; st.bal.load = v === 'none' ? { kind: 'none', body: -1, mass: null } : v === 'mass' ? { kind: 'mass', body: -1, mass: +$('#loadmass').value > 0 ? +$('#loadmass').value : null } : { kind: 'body', body: +v.slice(1), mass: null }; renderBalanceInputs(); return update(); }
   if (el.id === 'loadmass') { st.bal.load = { kind: 'mass', body: -1, mass: +el.value > 0 ? +el.value : null }; return update(); }
   if (el.id === 'rpm') { st.bal.rpm = +el.value > 0 ? +el.value : null; return update(); }
+  if (el.id === 'bandmode') { st.bal.band.mode = el.value; return update(); }
+  if (el.id === 'bandt') { st.bal.band.thick = el.value.trim() === '' ? null : +el.value; return update(); }
+  if (el.id === 'band0' || el.id === 'band1') { st.bal.band[el.id === 'band0' ? 'start' : 'end'] = el.value.trim() === '' ? null : +el.value; return update(); }
+  if (el.id === 'gencell' || el.id === 'gentol') { st.bal.gen[el.id === 'gencell' ? 'cell' : 'tol'] = +el.value > 0 ? +el.value : null; return update(); }
   if (el.id === 'tolv' || el.id === 'tolk') { st.bal.tol = { kind: $('#tolk').value, value: $('#tolv').value.trim() === '' ? null : +$('#tolv').value }; return update(); }
   if (card && el.dataset.free) { const t = st.tools[+card.dataset.i], k = el.dataset.free; t.free ??= {}; if (el.checked) t.free[k] = defBounds(k, t[k]); else delete t.free[k]; renderTools(); }
   if (card && (el.dataset.k === 'sign' || el.dataset.k === 'role')) { renderTools(); update(); }
@@ -272,6 +287,9 @@ $('#panel').addEventListener('click', e => {
   if (el.id === 'cancel') job?.cancel();
   if (el.id === 'ccancel') cjob?.cancel();
   if (el.id === 'contain') runContain();
+  if (el.id === 'gen') runGen();
+  if (el.id === 'gcancel') gjob?.cancel();
+  if (el.id === 'genremove') removeGenerated();
   if (el.id === 'copytable') copyNX();
   if (el.id === 'pinclear') { st.bal.pin = null; st.pinNote = ''; pinmsg(''); renderBalanceInputs(); update(); }
   if (el.id === 'ptcg') { const r = assemblyCG(st.bodies, st.sels); if (r.error) axmsg(r.error === 'none' ? 'select one or more bodies first, then snap the point to their CG' : 'net mass of the selection is not positive', true); else setAxis({ p: r.c, d: st.axis.d }, 'C', `axis point = CG of ${r.n} selected bod${r.n === 1 ? 'y' : 'ies'}; direction kept`); }
@@ -355,9 +373,9 @@ function renderBalanceInputs() {
   const hi = roleIndex(st.bodies), hub = st.bodies[hi.hub], a = st.bal.added;
   $('#added').innerHTML = `<option value="hub">Same as hub${hub ? ' (' + esc(materialName(hub.mat ?? materialId(hub.rho), hub.rho)) + ')' : ''}</option>` + MATERIALS.map(m => `<option value="${m.id}">${m.name}</option>`).join('') + `<option value="${CUSTOM}">Custom…</option>`;
   $('#added').value = a.mode; $('#addedrho').hidden = a.mode !== CUSTOM; if (a.mode === CUSTOM && a.rho) $('#addedrho').value = a.rho;
-  const am = addedMaterial(a, hub); $('#addedinfo').textContent = am ? `${fmt(gcc(am.rho), 4)} g/cc · stored for the generator (slice 2)` : a.mode === 'hub' ? 'set a Hub first' : 'type a density';
+  const am = addedMaterial(a, hub); $('#addedinfo').textContent = am ? `${fmt(gcc(am.rho), 4)} g/cc · added by the generator` : a.mode === 'hub' ? 'set a Hub first' : 'type a density';
   const L = st.bal.load;
-  $('#load').innerHTML = '<option value="none">none</option><option value="mass">typed mass (g)</option>' + st.bodies.map((b, i) => roleOf(b) === 'hub' || roleOf(b) === 'boundary' ? '' : `<option value="b${i}">${esc(b.name)}${roleOf(b) ? ' [' + ROLES.find(r => r.id === roleOf(b)).label + ']' : ''}</option>`).join('');
+  $('#load').innerHTML = '<option value="none">none</option><option value="mass">typed mass (g)</option>' + st.bodies.map((b, i) => roleOf(b) === 'hub' || roleOf(b) === 'boundary' || b.generated ? '' : `<option value="b${i}">${esc(b.name)}${roleOf(b) ? ' [' + ROLES.find(r => r.id === roleOf(b)).label + ']' : ''}</option>`).join('');
   $('#load').value = L.kind === 'body' ? 'b' + L.body : L.kind; if (!$('#load').value) { $('#load').value = 'none'; }
   $('#loadmass').hidden = L.kind !== 'mass'; if (L.kind === 'mass' && L.mass) $('#loadmass').value = L.mass;
   if (st.bal.rpm) $('#rpm').value = st.bal.rpm; $('#tolk').value = st.bal.tol?.kind || 'gmm'; if (st.bal.tol?.value != null) $('#tolv').value = st.bal.tol.value;
@@ -367,24 +385,25 @@ const isoTxt = iso => iso ? `G ${fmt(iso.G, 3)} mm/s (e ${fmt(iso.e * 1000, 3)} 
 function balanceState() {
   const hi = roleIndex(st.bodies), hub = st.bodies[hi.hub];
   if (!hub) return { hi };
-  const ax = st.axis, hubMom = add(bodyMoments(hub), st.generated?.mom || zero()), H = staticOf(hubMom, ax), pin = pinNow(), L = st.bal.load;
+  const ax = st.axis, hubMom = bodyMoments(hub), H = staticOf(hubMom, ax), pin = pinNow(), L = st.bal.load;
   const lb = L.kind === 'body' && loadOK(L) ? st.bodies[L.body] : null, lm = L.kind === 'mass' ? L.mass : lb ? bmass(lb) : null;
   const loadU = pin && lm > 0 ? orbitU(lm, pin) : [0, 0], base = [H.U[0] + loadU[0], H.U[1] + loadU[1]];
   const cws = hi.cw.filter(i => st.bodies[i].on), cwMom = sumMoments(cws.map(i => bodyMoments(st.bodies[i]))), cwS = cws.length ? staticOf(cwMom, ax) : null;
   const M = hubMom.m + (cws.length ? cwMom.m : 0);
-  const target = correctionTarget({ parts: [hubMom], points: [loadU], axis: ax, planes: [{}] });
+  const band = bandNow(hub, pin), target = correctionTarget({ parts: [hubMom], points: [loadU], axis: ax, planes: [{}], constraints: { axialBand: band.w || null } });
   const check = cws.length ? checkBalance({ base, cw: cwS.U, M, rpm: st.bal.rpm, tol: st.bal.tol, pinAng: pin ? pin.ang : null }) : null;
-  return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, cws, cwS, check, M, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
+  return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, band, cws, cwS, check, M, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
 }
 function renderBalance(fr, sp) {
   renderPin();
   const out = $('#statout'), chk = $('#checkout'), S = balanceState(), b = basis(st.axis);
   const pin = S.pin, sp2 = sp || [0, 50], z0 = Math.min(sp2[0], pin?.z ?? 0), z1 = Math.max(sp2[1], pin?.z ?? 0); view.setPin(pin ? pinPoint(pin, st.axis, z0) : null, pin ? pinPoint(pin, st.axis, z1) : null);
-  if (!S.hub) { out.innerHTML = '<p class="hint">Set one body\'s role to <b>Hub</b> for the static readout (and one to Boundary for the generator, slice 2).</p>'; chk.innerHTML = ''; return; }
+  renderGen(S, sp);
+  if (!S.hub) { out.innerHTML = '<p class="hint">Set one body\'s role to <b>Hub</b> for the static readout (and one to Boundary for the generator).</p>'; chk.innerHTML = ''; return; }
   const row = (l, U, a, d = '') => `<tr><td>${l}</td><td><b>${U}</b></td><td>${a}</td><td class="hint">${d}</td></tr>`;
   const ref = `Angles: 0° = +u (world ${b.u.map(v => fmt(v, 4)).join(', ')}), 90° = +v (${b.v.map(v => fmt(v, 4)).join(', ')}), right-handed about the axis direction w (counter-clockwise seen from the +w end). An imbalance angle is the heavy spot; the counterweight goes at +180°.`;
   out.innerHTML = `<table><tr><th></th><th>|U| g·mm</th><th>∠</th><th></th></tr>
-    ${row(`Hub <i>${esc(S.hub.name)}</i>${st.generated ? ' + generated' : ''}`, fmt(S.H.mag, 5), ang(S.H.ang), `m ${fmt(S.H.m, 5)} g · CG offset <b id="cgoff">${fmt(S.H.offset, 5)}</b> mm`)}
+    ${row(`Hub <i>${esc(S.hub.name)}</i>`, fmt(S.H.mag, 5), ang(S.H.ang), `m ${fmt(S.H.m, 5)} g · CG offset <b id="cgoff">${fmt(S.H.offset, 5)}</b> mm`)}
     ${row('Orbiting load', S.lm > 0 && S.pin ? fmt(Math.hypot(...S.loadU), 5) : '—', S.lm > 0 && S.pin ? ang(S.pin.ang) : '—', S.lm > 0 ? `${fmt(S.lm, 5)} g${S.lb ? ' (' + esc(S.lb.name) + ')' : ''} at e ${S.pin ? fmt(S.pin.e, 4) + ' mm' : '? (set the pin)'}` : 'none')}
     ${row('Hub + load', fmt(S.base.mag, 5), ang(S.base.ang), 'imbalance to cancel')}
     ${row('<b>Needed counterweight</b>', fmt(S.target.planes[0].mag, 5), ang(S.target.planes[0].ang), 'm·r of the added material')}
@@ -437,6 +456,93 @@ function runContain() {
   const copy = b => ({ pos: Float64Array.from(b.pos), idx: Uint32Array.from(b.idx) });
   w.postMessage({ boundary: copy(B), hub: H ? copy(H) : null, bodies: hi.cw.map(i => ({ i, name: st.bodies[i].name, ...copy(st.bodies[i]) })), tol });
 }
+// ---------- 0.2.0-alpha.3: axial band + counterweight generator (worker, Cancel) ----------
+const bandmsg = (m, bad) => { $('#bandmsg').textContent = m; $('#bandmsg').className = 'hint' + (bad ? ' bad' : ''); };
+function bandNow(hub, pin) {
+  const B = st.bal.band;
+  if (B.mode === 'face') return faceBand(B.face, st.axis, B.thick);
+  if (B.mode === 'typed') return typedBand(B.start, B.end);
+  return hub ? autoBand(hub.pos, st.axis, axisFrame(), pin ? pin.ang : null) : { error: 'set a Hub first' };
+}
+const bbDiag = b => { const lo = [1 / 0, 1 / 0, 1 / 0], hi = [-1 / 0, -1 / 0, -1 / 0]; for (let i = 0; i < b.pos.length; i++) { const k = i % 3; if (b.pos[i] < lo[k]) lo[k] = b.pos[i]; if (b.pos[i] > hi[k]) hi[k] = b.pos[i]; } return Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]); };
+const radialMax = b => { const fr = axisFrame(), R = fr.R, o = fr.o; let r = 0; for (let i = 0; i < b.pos.length; i += 3) { const x = b.pos[i] - o[0], y = b.pos[i + 1] - o[1], z = b.pos[i + 2] - o[2]; r = Math.max(r, Math.hypot(R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z)); } return r; };
+const genBody = () => st.bodies.find(b => b.generated) || null;
+const r6 = v => +(+v).toPrecision(9);
+// Everything the generated piece depends on; a different key marks the piece stale (regenerate).
+function genKey(S = balanceState()) {
+  const hi = S.hi, H = st.bodies[hi.hub], Bd = st.bodies[hi.boundary], am = addedMaterial(st.bal.added, H);
+  if (!H || !Bd) return '';
+  return JSON.stringify([H.name, H.pos.length, H.rho, Bd.name, Bd.pos.length, st.axis.p.map(r6), st.axis.d.map(r6), S.band?.w?.map(r6), S.target?.planes[0].U.map(r6), am?.rho, st.bal.gen.cell, genTol(S).tol]);
+}
+function genTol(S) { return st.bal.gen.tol > 0 ? { tol: st.bal.gen.tol, how: 'typed' } : genDefaultTol(st.bal.tol, st.bal.rpm, S.H?.m, S.target?.planes[0].mag || 0); }
+function renderGen(S, sp) {
+  const hi = S.hi, Bd = st.bodies[hi.boundary], B = st.bal.band;
+  $('#bandmode').value = B.mode; $('#bandface').hidden = B.mode !== 'face'; $('#bandtyped').hidden = B.mode !== 'typed';
+  if (document.activeElement?.id !== 'bandt') $('#bandt').value = B.thick ?? ''; if (document.activeElement?.id !== 'band0') $('#band0').value = B.start ?? ''; if (document.activeElement?.id !== 'band1') $('#band1').value = B.end ?? '';
+  if (document.activeElement?.id !== 'gencell') $('#gencell').value = st.bal.gen.cell ?? ''; if (document.activeElement?.id !== 'gentol') $('#gentol').value = st.bal.gen.tol ?? '';
+  const band = S.band || bandNow(null, null);
+  if (band.error) { bandmsg(band.error, B.mode !== 'auto' || !!S.hub); view.setBand(null); }
+  else {
+    bandmsg(`band w ${fmt(band.w[0], 5)} … ${fmt(band.w[1], 5)} mm (${fmt(band.w[1] - band.w[0], 5)} mm thick) · ${band.how}${band.warn ? ' — ⚠ ' + band.warn : ''}`, !!band.warn);
+    const ref = Bd || S.hub; view.setBand(ref ? axisFrame() : null, band.w[0], band.w[1], ref ? radialMax(ref) * 1.03 : 0);
+  }
+  const T = S.target?.planes[0];
+  $('#gendef').textContent = S.hub && Bd ? `default cell ${fmt(defaultCell(bbDiag(Bd)), 3)} mm · leftover tolerance ${fmt(genTol(S).tol, 4)} g·mm (${genTol(S).how})${T ? ` · needed ${fmt(T.mag, 5)} g·mm at ${ang(T.ang)}` : ''}` : 'set one Hub and one Boundary to generate';
+  const g = genBody(); $('#genremove').hidden = !g;
+  const el = $('#genout'); if (!g && !st.gen?.needsRegenerate) { el.innerHTML = ''; return; }
+  if (!g) { el.innerHTML = `<p class="flag">⚠ ${esc(st.gen.note || 'regenerate the counterweight')}</p>`; return; }
+  const r = st.gen?.meta || {}, mom = bodyMoments(g), Sg = staticOf(mom, st.axis), pin = S.pin, d = derive(g.vol);
+  const left = S.target ? vec([S.base.U[0] + Sg.U[0], S.base.U[1] + Sg.U[1]]) : null, tol = r.tol ?? genTol(S).tol, pass = left ? left.mag <= tol : null;
+  const rel = pin ? ((Sg.ang - pin.ang) % 360 + 360) % 360 : null, stale = st.gen?.key && st.gen.key !== genKey(S);
+  el.innerHTML = `${stale ? '<p class="flag" id="genstale">⚠ inputs changed since generation (hub, boundary, axis, band, load, material, cell or tolerance) — regenerate</p>' : ''}
+    <table><tr><td>Piece <i>${esc(g.name)}</i></td><td>mass <b id="genmass">${fmt(mom.m, 5)}</b> g</td><td>volume ${fmt(d.m, 6)} mm³</td></tr>
+    <tr><td>CG (world)</td><td colspan="2">${d.c.map(v => fmt(v, 5)).join(', ')} mm · offset ${fmt(Sg.offset, 5)} mm</td></tr>
+    <tr><td>m·r</td><td>${fmt(Sg.mag, 5)} g·mm at ${ang(Sg.ang)}</td><td>${rel != null ? `<b id="genrel">${fmt(rel, 2)}°</b> from the pin` : 'no pin'}</td></tr>
+    <tr><td>Leftover (hub + load + piece)</td><td><span id="genleft">${left ? fmt(left.mag, 5) : '—'}</span> g·mm${left ? ' at ' + ang(left.ang) : ''}</td><td>${pass == null ? '' : `<span class="verdict ${pass ? 'pass' : 'fail'}" id="genverdict">${pass ? 'PASS' : 'FAIL'}</span> tol ${fmt(tol, 4)}`}</td></tr></table>
+    <div class="hint">${r.cells ? `${esc(r.cells)} cells of ${fmt(r.cell, 3)} × ${fmt(r.cell, 3)} × ${fmt(r.cellW, 3)} mm · ${esc(r.iterations)} mesh iteration${r.iterations === 1 ? '' : 's'} · ${esc(r.tris)} triangles · ${esc(r.components)} piece${r.components === 1 ? '' : 's'}${r.open ? `, ${esc(r.open)} open edges` : ', closed'} · ${r.hubVertices ? `touches the hub (${esc(r.hubVertices)} contact vertices within ${fmt(r.contactTol, 2)} mm)` : `<span class="flag">does not touch the hub: gap ${r.hubGap == null ? '> 2 cells' : fmt(r.hubGap, 3) + ' mm'}</span>`} · vertices outside boundary ${esc(r.outsideBoundary)}, inside hub ${esc(r.insideHub)}, outside band ${esc(r.outsideBand)}${r.crossBoundary ? ` · ${esc(r.crossBoundary)} edges cut a concave boundary corner` : ''}${r.dipBoundary > 0 || r.dipHub > 0 ? ` (facet-chord dip ≤ ${fmt(Math.max(r.dipBoundary, r.dipHub), 3)} mm)` : ''} · ${fmt(r.ms / 1000, 3)} s` : 'restored from the session'}${r.notes?.length ? ' · ' + esc(r.notes.join('; ')) : ''}</div>
+    <div class="hint">The piece is a Counterweight in check mode above and a row in the body table. No export yet.</div>`;
+}
+let gjob = null;
+function runGen() {
+  const S = balanceState(), msg = (m, bad) => { $('#genmsg').textContent = m; $('#genmsg').className = 'hint' + (bad ? ' bad' : ''); };
+  if (!S.hub) return msg('set one body as Hub first', true);
+  if (S.hi.boundary < 0) return msg('set one body as Boundary first', true);
+  if (S.band.error) return msg('axial band: ' + S.band.error, true);
+  const am = addedMaterial(st.bal.added, S.hub); if (!am) return msg('choose the added material (or type its density)', true);
+  const T = S.target.planes[0]; if (!(T.mag > 0)) return msg('nothing to balance: hub + load imbalance is zero', true);
+  if (gjob) return msg('the generator is already running', true);
+  const H = S.hub, Bd = st.bodies[S.hi.boundary], tol = genTol(S).tol, key = genKey(S), cell = st.bal.gen.cell || defaultCell(bbDiag(Bd));
+  const w = new Worker(new URL('./gen-worker.js', import.meta.url), { type: 'module' }), t0 = performance.now(); let stage = 'Starting', frac = 0, done = false;
+  const finish = () => { if (done) return; done = true; clearInterval(tick); w.terminate(); gjob = null; $('#gjob').hidden = true; $('#gen').disabled = false; };
+  const tick = setInterval(() => { $('#gjobmsg').textContent = `Generator: ${stage}… ${((performance.now() - t0) / 1000).toFixed(0)} s`; $('#gprog').value = frac; }, 200);
+  gjob = { cancel: () => { finish(); msg('generation cancelled'); } }; $('#gjob').hidden = false; $('#gen').disabled = true; msg('');
+  w.onmessage = ({ data: d }) => {
+    if (d.type === 'progress') { stage = d.stage; frac = d.frac; }
+    else if (d.type === 'error') { finish(); msg('generator: ' + d.message, true); }
+    else if (d.type === 'done') {
+      finish(); const r = d.result, { pos, idx, ...meta } = r; meta.tris = idx.length / 3;
+      dropGenerated();
+      const name = uniqueGenName(), b = { name, stepName: '(generated)', product: '', pos, idx, vol: meshMoments(pos, idx), rho: am.rho, sign: 1, on: true, src: 'generated', mat: materialId(am.rho), role: 'cw', generated: true, faces: [] };
+      st.bodies.push(b); st.gen = { key, meta, needsRegenerate: false }; st.check = null; view.setOutside(null);
+      view.setBodies(st.bodies); view.setRoles(viewRoles()); view.select(st.sels); renderBodies(); renderBalanceInputs(); update();
+      msg(`generated in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.capped ? ' — ⚠ the allowed region is too small for a full correction' : ''}`, r.capped);
+    }
+  };
+  w.onerror = e => { e.preventDefault?.(); finish(); msg('generator worker failed: ' + (e.message || 'out of memory?'), true); };
+  const copy = b => ({ pos: Float64Array.from(b.pos), idx: Uint32Array.from(b.idx) });
+  w.postMessage({ boundary: copy(Bd), hub: copy(H), axis: { p: st.axis.p, d: st.axis.d }, band: S.band.w, target: T.U, rho: am.rho, cell, tol, contactTol: Math.max(1e-6 * bbDiag(Bd), 2 * Math.max(H.mesh?.deflection || 0, Bd.mesh?.deflection || 0), 1e-3 * cell) });
+}
+const uniqueGenName = () => { let n = 'Generated CW', k = 2; while (st.bodies.some(b => b.name === n)) n = `Generated CW ${k++}`; return n; };
+function dropGenerated() { const i = st.bodies.findIndex(b => b.generated); if (i < 0) return false; st.bodies.splice(i, 1); st.sels = st.sels.filter(j => j !== i).map(j => j > i ? j - 1 : j); st.sel = st.sels.at(-1) ?? -1; st.gen = null; return true; }
+function removeGenerated() { if (!dropGenerated()) return; st.check = null; view.setOutside(null); view.setBodies(st.bodies); view.setRoles(viewRoles()); view.select(st.sels); renderBodies(); renderBalanceInputs(); update(); $('#genmsg').textContent = 'generated piece removed'; }
+function genSession() { const g = genBody(); if (!g) return st.gen?.needsRegenerate ? { needsRegenerate: true, meta: st.gen.meta, note: st.gen.note } : null; return packGenerated(g, { ...(st.gen?.meta || {}), key: st.gen?.key || null }); }
+function restoreGenerated(j) {
+  const g = unpackGenerated(j); if (!g) return;
+  if (g.bad) card('warn', `Session: ${g.bad} invalid generated-piece field${g.bad > 1 ? 's' : ''} ignored.`);
+  if (g.needsRegenerate) { st.gen = { needsRegenerate: true, meta: g.meta, note: g.note }; card('warn', `Session: ${esc(g.note)}.`); return; }
+  st.bodies.push({ name: g.name, stepName: '(generated)', product: '', pos: g.pos, idx: g.idx, vol: meshMoments(g.pos, g.idx), rho: g.rho, sign: 1, on: g.on, src: 'generated', mat: g.mat ?? materialId(g.rho), role: 'cw', generated: true, faces: [] });
+  st.gen = { key: g.meta?.key || null, meta: g.meta, needsRegenerate: false };
+}
 // ---------- per-body table for comparison with NX Measure Bodies ----------
 // Volume to 0.001 mm³ (and ≥ 7 significant figures), mass g, density g/cc, CG from the model origin to 0.0001 mm.
 const NXH = ['Body', 'STEP name', 'Role', 'Volume mm3', 'Mass g', 'Density g/cc', 'CG X mm', 'CG Y mm', 'CG Z mm', 'Volume ± mm3', 'CG ± mm', 'Mesh'];
@@ -475,8 +581,8 @@ function exportAs(kind) {
   if (kind === 'csv') return save('counterweights.csv', 'tool,kind,role,sign,removal,param,value\n' + st.tools.flatMap(t => [...PARAMS[t.kind], ...COMMON_PARAMS].map(k => [t.name, t.kind, t.role, t.sign, t.sign < 0, k, t[k]].join(','))).join('\n') +
     `\n\n${resRows(r1, axisNames(fr)).map(r => r.join(',')).join('\n')}${cgRows.length ? '\n' + cgRows.map(r => r.join(',')).join('\n') : ''}\n`, 'text/csv');
   save('balance-session.json', JSON.stringify({ app: 'rotating-assembly-balancer', version: VERSION, units: { length: 'mm', mass: 'g', density: 'kg/m3' },
-    axis: axisJson(axisNames(fr)), bodies: st.bodies.map((b, i) => ({ ...bodyRef(b, i), on: b.on, rho: b.rho, src: b.src, removal: b.sign < 0, mass: bmass(b), role: roleOf(b), mat: b.mat ?? materialId(b.rho) })),
-    balance: exportBalance(st.bal, st.bodies),
+    axis: axisJson(axisNames(fr)), bodies: st.bodies.filter(b => !b.generated).map((b, i) => ({ ...bodyRef(b, i), on: b.on, rho: b.rho, src: b.src, removal: b.sign < 0, mass: bmass(b), role: roleOf(b), mat: b.mat ?? materialId(b.rho) })),
+    balance: exportBalance(st.bal, st.bodies), generated: genSession(),
     tools: st.tools.map(t => ({ ...t, removal: t.sign < 0 })), residual: resJson(r1, axisNames(fr)), assemblyCG: assemblyCGJson, optimisation: st.last }, null, 1), 'application/json');
 }
 function loadSession(j) {
@@ -484,10 +590,12 @@ function loadSession(j) {
   // H4: tools are rebuilt from schema-checked fields only (src/session-schema.js)
   let badTools = 0; st.tools = j.tools.slice(0, 200).flatMap(t => { const { o, bad } = cleanTool(t); badTools += bad; return o ? [makeTool(o.kind, o)] : []; });
   if (badTools) card('warn', `Session: ${badTools} invalid tool field${badTools > 1 ? 's' : ''} ignored.`);
+  dropGenerated();
   const out = restoreSession(j, st.bodies);
   const rb = restoreBalance(j.balance, st.bodies); st.bal = rb.bal; st.check = null; view.setOutside(null);
   for (const b of st.bodies) b.mat ??= materialId(b.rho);
   const notes = [...(out.roleNotes || []), ...rb.notes]; if (notes.length) card('warn', `Session: ${esc(notes.join('; '))}.`);
+  restoreGenerated(j.generated);
   renderBalanceInputs();
   if (out.densMatch.stale && (j.bodies || []).length) card('warn', `Session: some body densities were not applied (${esc(out.densMatch.notice) || 'could not match them uniquely'}).`);
   renderBodies(); renderTools(); renderAxis();
@@ -511,4 +619,4 @@ document.addEventListener('drop', e => loadFiles([...e.dataTransfer.files]).catc
 $('#file').addEventListener('change', e => loadFiles([...e.target.files]).catch(err => status('Error: ' + err.message)));
 renderAxis(); setAxis(st.axis, 'Z');
 renderBalanceInputs(); renderNX();
-window.rab = { st, view, nxTSV, balanceState }; // test hook (tools/ui-smoke.cjs)
+window.rab = { st, view, nxTSV, balanceState, genKey }; // test hook (tools/ui-smoke.cjs)

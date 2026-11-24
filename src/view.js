@@ -14,8 +14,8 @@ export function createView(el) {
   const ctl = new OrbitControls(cam, ren.domElement);
   scene.add(new HemisphereLight(0xffffff, 0x8899aa, 2.2)); const sun = new DirectionalLight(0xffffff, 1.6); sun.position.set(1, -1, 2); scene.add(sun);
   const bodies = new Group(), tools = new Group(), marks = new Group(), picks = new Group(), cgGrp = new Group(), originGrp = new Group(), cgLine = new Group();
-  const pinGrp = new Group(), outGrp = new Group();
-  const overlay = new Scene(); scene.add(bodies, tools, marks, picks, pinGrp, outGrp); overlay.add(cgGrp, originGrp, cgLine);
+  const pinGrp = new Group(), outGrp = new Group(), bandGrp = new Group();
+  const overlay = new Scene(); scene.add(bodies, tools, marks, picks, pinGrp, outGrp, bandGrp); overlay.add(cgGrp, originGrp, cgLine);
   const triad = makeTriad(), tcam = new OrthographicCamera(-1.45, 1.45, 1.45, -1.45, 0.1, 10);
   let mq;
   const resize = () => { // also on devicePixelRatio changes (browser zoom, moving to another screen) so both passes stay crisp
@@ -65,7 +65,7 @@ export function createView(el) {
   });
   // 0.2.0 roles: hub tinted blue-green, boundary a see-through ghost, existing counterweight orange, ignore faded
   let roles = [];
-  const ROLE_LOOK = { hub: { color: 0x3a8f8a, opacity: 0.9 }, boundary: { color: 0x7fa7d9, opacity: 0.16 }, cw: { color: 0xe8902a, opacity: 0.95 }, ignore: { color: 0xb8bec8, opacity: 0.35 } };
+  const ROLE_LOOK = { hub: { color: 0x3a8f8a, opacity: 0.9 }, boundary: { color: 0x7fa7d9, opacity: 0.16 }, cw: { color: 0xe8902a, opacity: 0.95 }, ignore: { color: 0xb8bec8, opacity: 0.35 }, gen: { color: 0xd6309a, opacity: 0.97 } }; // gen: the generated counterweight (magenta)
   const paint = () => bodies.children.forEach((m, i) => {
     const on = sel.has(i), look = ROLE_LOOK[roles[i]];
     m.material.color.setHex(look ? look.color : m.userData.color); m.material.depthWrite = roles[i] !== 'boundary';
@@ -133,6 +133,17 @@ export function createView(el) {
       const m = new Mesh(new SphereGeometry(size * 0.009, 12, 8), new MeshBasicMaterial({ color: 0x7a2bd6, depthTest: false })); m.position.set(...a); m.renderOrder = 12; pinGrp.add(m);
     },
     hasPin: () => pinGrp.children.length > 0,
+    // generator axial band: two translucent discs (radius r, mm) square to the axis at w0 and w1, plus a faint slab between
+    setBand(fr, w0, w1, r) {
+      clear(bandGrp); if (fr == null || !(w1 > w0) || !(r > 0)) return;
+      const ax = new Vector3(fr.R[6], fr.R[7], fr.R[8]), at = w => new Vector3(...fr.o).add(ax.clone().multiplyScalar(w)), q = new Vector3(0, 1, 0);
+      const disc = (w, name) => { const m = new Mesh(new CylinderGeometry(r, r, Math.max((w1 - w0) * 0.004, size * 1e-4), 64, 1, true), new MeshBasicMaterial({ color: 0xd6309a, transparent: true, opacity: 0.18, depthWrite: false, side: 2 })); m.quaternion.setFromUnitVectors(q, ax); m.position.copy(at(w)); m.name = name; bandGrp.add(m);
+        const cap = new Mesh(new CylinderGeometry(r, r, 1e-6, 64), new MeshBasicMaterial({ color: 0xd6309a, transparent: true, opacity: 0.12, depthWrite: false, side: 2 })); cap.quaternion.copy(m.quaternion); cap.position.copy(at(w)); bandGrp.add(cap); };
+      disc(w0, 'band-0'); disc(w1, 'band-1');
+      const slab = new Mesh(new CylinderGeometry(r, r, w1 - w0, 64, 1, true), new MeshBasicMaterial({ color: 0xd6309a, transparent: true, opacity: 0.07, depthWrite: false, side: 2 }));
+      slab.quaternion.setFromUnitVectors(q, ax); slab.position.copy(at((w0 + w1) / 2)); slab.name = 'band-slab'; bandGrp.add(slab);
+    },
+    bandDrawn: () => ['band-0', 'band-1'].every(n => bandGrp.getObjectByName(n)),
     // check mode: small red markers at vertices found outside the boundary (flat xyz list, capped)
     setOutside(flat) {
       clear(outGrp); if (!flat || !flat.length) return;

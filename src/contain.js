@@ -112,3 +112,37 @@ export function containment(I, pos, idx, { tol = 1e-6 * I.diag, maxEdgeTests = 4
   }
   return { n, nOut: uniqOut, outside, frac: n ? uniqOut / n : 0, crossings, crossSkipped: skipped, inside: uniqOut === 0 && crossings === 0 };
 }
+
+// ---------- 0.2.0-alpha.3 helpers for the generator ----------
+// Heights (along axis ax) of every surface crossing of the line through (xa, xb) in the other two coordinates,
+// sorted. Uses the same top-left tie rule, so a line through a shared edge is counted once. Pairs of heights
+// [h0, h1], [h2, h3], … are the inside intervals of a closed mesh.
+export function columnHeights(I, ax, xa, xb) {
+  const g = I.grids[ax], { a, b, sa, sb } = g, { pos, idx, lo } = I, out = [];
+  if (xa < lo[a] || xa > I.hi[a] || xb < lo[b] || xb > I.hi[b]) return out;
+  for (const t of g.cells[cl((xa - lo[a]) / sa) * G + cl((xb - lo[b]) / sb)]) {
+    const i0 = idx[3 * t], i1 = idx[3 * t + 1], i2 = idx[3 * t + 2];
+    let A = [pos[3 * i0 + a], pos[3 * i0 + b]], B = [pos[3 * i1 + a], pos[3 * i1 + b]], C = [pos[3 * i2 + a], pos[3 * i2 + b]];
+    const area = (B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]); if (area === 0) continue;
+    let P = [i0, i1, i2]; if (area < 0) { [B, C] = [C, B]; P = [i0, i2, i1]; }
+    if (!(edgeIn(A[0], A[1], B[0], B[1], xa, xb) && edgeIn(B[0], B[1], C[0], C[1], xa, xb) && edgeIn(C[0], C[1], A[0], A[1], xa, xb))) continue;
+    const l1 = ((C[0] - B[0]) * (xb - B[1]) - (C[1] - B[1]) * (xa - B[0])) / Math.abs(area), l2 = ((A[0] - C[0]) * (xb - C[1]) - (A[1] - C[1]) * (xa - C[0])) / Math.abs(area), l3 = 1 - l1 - l2;
+    out.push(l1 * pos[3 * P[0] + ax] + l2 * pos[3 * P[1] + ax] + l3 * pos[3 * P[2] + ax]);
+  }
+  return out.sort((x, y) => x - y);
+}
+export const insideIntervals = (hs, h) => { for (let i = 0; i + 1 < hs.length; i += 2) if (h > hs[i] && h < hs[i + 1]) return true; return false; };
+// Smallest parameter t in [0, 1] where segment p→q meets the mesh surface, or null.
+export function segmentHit(I, p, q) {
+  const g = I.grids[2], { a, b, sa, sb } = g, i0 = cl((Math.min(p[a], q[a]) - I.lo[a]) / sa), i1 = cl((Math.max(p[a], q[a]) - I.lo[a]) / sa), j0 = cl((Math.min(p[b], q[b]) - I.lo[b]) / sb), j1 = cl((Math.max(p[b], q[b]) - I.lo[b]) / sb);
+  const d = sub(q, p); let best = null; const seen = new Set();
+  for (let x = i0; x <= i1; x++) for (let y = j0; y <= j1; y++) for (const t of g.cells[x * G + y]) {
+    if (seen.has(t)) continue; seen.add(t);
+    const A = V(I.pos, I.idx[3 * t]), e1 = sub(V(I.pos, I.idx[3 * t + 1]), A), e2 = sub(V(I.pos, I.idx[3 * t + 2]), A);
+    const h = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]], det = dot(e1, h); if (Math.abs(det) < 1e-300) continue;
+    const f = 1 / det, s = sub(p, A), u = f * dot(s, h); if (u < 0 || u > 1) continue;
+    const qv = [s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0]], v = f * dot(d, qv); if (v < 0 || u + v > 1) continue;
+    const tt = f * dot(e2, qv); if (tt >= 0 && tt <= 1 && (best == null || tt < best)) best = tt;
+  }
+  return best;
+}

@@ -38,3 +38,40 @@ export function cleanTool(t) {
   return { o, bad };
 }
 export const finiteVec = (v, n = 3) => Array.isArray(v) && v.length === n && v.every(fin);
+
+// ---------- 0.2.0-alpha.3: generator fields ----------
+const num = (v, lo = -MAX_ABS, hi = MAX_ABS) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+// axial band { mode, face { p, d }, thick, start, end } → checked copy (defaults for anything invalid) + count dropped
+export function cleanBand(j) {
+  const o = { mode: 'auto', face: null, thick: null, start: null, end: null }; let bad = 0;
+  if (j == null) return { o, bad };
+  if (typeof j !== 'object' || Array.isArray(j)) return { o, bad: 1 };
+  if ('mode' in j) { if (['auto', 'face', 'typed'].includes(j.mode)) o.mode = j.mode; else bad++; }
+  if (j.face != null) { if (finiteVec(j.face.p) && finiteVec(j.face.d) && Math.hypot(...j.face.d) > 0) o.face = { p: j.face.p.slice(), d: j.face.d.slice() }; else bad++; }
+  for (const k of ['thick', 'start', 'end']) if (j[k] != null) { if (num(j[k])) o[k] = j[k]; else bad++; }
+  return { o, bad };
+}
+// generator settings { cell (mm), tol (g·mm) } — positive, bounded
+export function cleanGenSettings(j) {
+  const o = { cell: null, tol: null }; let bad = 0;
+  if (j == null) return { o, bad };
+  if (typeof j !== 'object' || Array.isArray(j)) return { o, bad: 1 };
+  if (j.cell != null) { if (num(j.cell, 1e-4, 1e4) && j.cell > 0) o.cell = j.cell; else bad++; }
+  if (j.tol != null) { if (num(j.tol, 1e-9, 1e9) && j.tol > 0) o.tol = j.tol; else bad++; }
+  return { o, bad };
+}
+// result summary of a generated piece: only known fields, numbers finite, notes short strings, key a short string
+const META_NUM = ['cell', 'cellW', 'allowed', 'cells', 'iterations', 'tol', 'volume', 'mass', 'components', 'open', 'hubVertices', 'hubGap', 'contactTol', 'dipBoundary', 'dipHub', 'reverted', 'outsideBoundary', 'crossBoundary', 'insideHub', 'outsideBand', 'ms', 'tris'];
+const META_VEC = { residual: 2, achieved: 2, target: 2, band: 2, grid: 3 };
+export function cleanGenMeta(m) {
+  const o = {}; let bad = 0;
+  if (m == null) return { o: null, bad };
+  if (typeof m !== 'object' || Array.isArray(m)) return { o: null, bad: 1 };
+  for (const k of META_NUM) if (m[k] != null) { if (num(m[k])) o[k] = m[k]; else bad++; }
+  for (const [k, n] of Object.entries(META_VEC)) if (m[k] != null) { if (finiteVec(m[k], n)) o[k] = m[k].slice(); else bad++; }
+  if (m.capped != null) { if (typeof m.capped === 'boolean') o.capped = m.capped; else bad++; }
+  if (m.notes != null) { if (Array.isArray(m.notes) && m.notes.length <= 10 && m.notes.every(s => typeof s === 'string' && s.length <= 300)) o.notes = m.notes.slice(); else bad++; }
+  if (m.key != null) { if (typeof m.key === 'string' && m.key.length <= 4000) o.key = m.key; else bad++; }
+  return { o, bad };
+}
+export const GEN_NAME = /^Generated CW( \d{1,4})?$/;

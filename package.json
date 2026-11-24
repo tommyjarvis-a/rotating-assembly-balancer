@@ -1,6 +1,6 @@
 {
   "name": "rotating-assembly-balancer",
-  "version": "0.2.0-alpha.2",
+  "version": "0.2.0-alpha.3",
   "private": true,
   "type": "module",
   "description": "Client-side STEP mass properties and two-plane balancing for rotating assemblies (e.g. e-compressor rotors)",
@@ -9,6 +9,6 @@
     "test": "node --test test/*.test.mjs",
     "accuracy": "node tools/accuracy.mjs",
     "fixtures": "node tools/gen-fixtures.mjs",
-    "ui": "node tools/ui-smoke-020.cjs && node tools/ui-smoke-020a2.cjs"
+    "ui": "node tools/ui-smoke-020.cjs && node tools/ui-smoke-020a2.cjs && node tools/ui-smoke-021.cjs"
   }
 }

@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.2.0-alpha.3 — 2026-11-24 (alpha)
+
+Slice 2: the counterweight generator and the axial band. Static balance only; no export of the piece yet (slice 3).
+- **Axial band** (section 2c): *auto* = the hub's axial extent next to the drive pin (hub geometry within ±30° of the
+  pin angle; the hub's full axial extent without a pin), *planar face + thickness* (pick a face square to the axis;
+  the sign of the thickness picks the side), or *typed start / end* (mm along the axis from the axis point). Shown as
+  translucent slab planes in the view and passed to `correctionTarget({ constraints: { axialBand } })`.
+- **Generator** (worker with progress and Cancel): voxelizes the allowed region (inside the Boundary, outside the
+  Hub, inside the band) at an adjustable cell size (default from the boundary size, 1-2-5 steps; a 2.5M-node guard
+  raises it with a note), then grows ONE 6-connected piece from the best allowed cell next to the hub, always adding
+  the frontier cell with the largest lever along the needed-correction direction (bridges cost mass), and refines at
+  the margin (add / remove a removable cell, keeping hub contact and connectivity) until the leftover is under the
+  tolerance — this also removes the angle error. Default tolerance: the check-mode tolerance (g·mm, or G grade at the
+  RPM for the hub mass), else 0.2 % of the needed correction.
+- **Surface**: marching tetrahedra (consistent 6-tet split, closed and manifold), vertices placed exactly on the hub
+  surface, boundary surface or band planes where the piece meets them; light Taubin (λ/μ, volume-preserving)
+  smoothing of the free vertices only, with any vertex that would leave the region put back. Exact mass properties
+  from the final mesh with the added material; if the leftover after meshing is over tolerance the voxel target is
+  corrected and the piece re-meshed (up to 8 iterations; the count is shown).
+- **Readout**: mass, volume, CG, m·r and angle, angle from the pin, leftover hub + load + piece with PASS / FAIL, cell
+  count, iterations, triangles, pieces, closure, hub contact (or the gap), vertices outside the boundary / inside the
+  hub / outside the band, and the facet-chord dip at concave boundary corners. The piece is shown magenta, counts as
+  a Counterweight in check mode (and *Check containment*), and gets a row in the NX body table. *Remove generated*
+  deletes it; changing any input marks it stale.
+- **Sessions** store the generated mesh (base64, ≤ 8 MB; larger pieces are noted as "regenerate"), the band and the
+  generator settings; earlier sessions still load.
+- **Hardening (as alpha.2)**: every restored generator field is schema-checked (`cleanBand`, `cleanGenSettings`,
+  `cleanGenMeta` in `src/session-schema.js`): band mode allowlist, finite face point / non-zero normal, numeric
+  thickness / start / end; cell 1e-4–1e4 mm and tolerance > 0; the stored summary keeps only known numeric / vector
+  fields, ≤ 10 notes of ≤ 300 chars and the input key. The generated mesh must be valid base64 under the size cap,
+  decode to whole finite vertices (|x| ≤ 1e7 mm) and in-range triangle indices, with a checked density; its name must
+  match `Generated CW [n]` and its material a preset id. Anything else is dropped and counted in a session card (a bad
+  mesh becomes "regenerate"). All data text in the readout is escaped; the worker loads from 'self' and no inline
+  scripts or styles are added, so the alpha.2 CSP is unchanged.
+- Tests: 81 Node tests (79 pass, 2 optional OCP checks skipped), new: synthetic hub + boundary ring (leftover under
+  tolerance, one closed piece touching the hub, inside boundary and band, opposite the needed angle, mass within 15 %
+  of the lightest annular sector), tilted axis + typed band, Cancel and error cases, cell guard, column / segment
+  helpers, band modes and session round trip, generated-mesh session packing and default tolerance, schema checks on every generator session field (incl. the
+  malicious-session fixture, which now also carries generator payloads); `tools/ui-smoke-021.cjs` (Playwright, 24
+  checks) and one more check in `tools/ui-smoke-020a2.cjs` (now 19: the malicious generator fields are rejected and
+  shown as text, no script runs, no CSP violation).
+
 ## 0.2.0-alpha.2 — 2026-11-24 (alpha)
 
 Fix release for the c8cc29d (alpha.1) gate. The counterweight generator moves to 0.2.0-alpha.3.
@@ -28,7 +70,7 @@ Fix release for the c8cc29d (alpha.1) gate. The counterweight generator moves to
   share one column in the body list, so it fits at 470 px and an 800 px window keeps a 440 px view.
 - Tests: 73 Node tests (71 pass, 2 optional OCP checks skipped), new `test/fixes020a2.test.mjs` (schema incl. the
   malicious-session fixture `test/fixtures/malicious-session.json`, picked-pin geometry, touching containment on a
-  curved bore plus a real concave crossing, CAD floor); `tools/ui-smoke-020a2.cjs` (Playwright, 19 checks: CSP with
+  curved bore plus a real concave crossing, CAD floor); `tools/ui-smoke-020a2.cjs` (Playwright, 18 checks: CSP with
   import / WASM / workers, malicious session, M7, M8, L8, L10, L11, no CSP violations).
 
 ## 0.2.0-alpha.1 — 2026-11-24 (alpha)

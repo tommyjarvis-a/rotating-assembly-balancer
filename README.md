@@ -173,6 +173,9 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
   (`python3 -m http.server 8765 & node tools/ui-smoke-020.cjs`).
 - `tools/ui-smoke-020a2.cjs` (0.2.0-alpha.2): CSP (import, WASM, workers, no violations), malicious session, orbiting
   load cleared on role change, picked pin following the axis, RPM prompt, no "-0.0000", panel / body list widths.
+- `tools/ui-smoke-021.cjs` (0.2.0-alpha.3): axial band modes and slabs, generator Cancel, generated piece (PASS,
+  one closed piece touching the hub, angle, colour, check mode, containment, body table, < 20 s), session round trip
+  with the mesh, stale flag and Remove.
 
 ## Size, dependencies, token/code efficiency
 
@@ -197,7 +200,7 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
   counterweight must stay inside it, the hub is excluded from that region), **Counterweight (existing)** (any number,
   check mode) and **Ignore**. Boundary and Ignore bodies are not material in the section-2 residuals.
 - **Materials**: per-body presets Steel 7.85 and tungsten heavy alloy 17.0 / 17.6 / 18.0 / 18.5 g/cc, or a custom
-  density (ρ column, kg/m³). *Added material* defaults to the hub's material; it is stored for the slice-2 generator.
+  density (ρ column, kg/m³). *Added material* defaults to the hub's material; the generator uses it.
 - **Spin axis** = point + vector. Vector: cylinder axis (also sets the point), circular edge, planar-face normal, two
   points, X/Y/Z presets, a principal axis, or typed i/j/k (normalised once on commit; the boxes keep what you typed).
   Point: pick on the model, snap to the CG of the selected bodies, or type X/Y/Z. Faces come from the B-rep face ids;
@@ -221,14 +224,38 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 ## Security
 
 Everything runs in the browser; files never leave it. Session JSON is treated as untrusted: each field is
-schema-checked on restore (`src/session-schema.js`) and data-derived text is escaped where it is shown. The page sets a
+schema-checked on restore (`src/session-schema.js`; this includes the generator's band, cell, tolerance, stored
+summary and generated mesh, which must decode to finite in-range geometry) and data-derived text is escaped where it is shown. The page sets a
 strict Content-Security-Policy (`script-src 'self' 'wasm-unsafe-eval'`, no inline script or style).
 
-## Limitations (0.2.0-alpha.2)
+## Counterweight generator (0.2.0-alpha.3, slice 2)
 
-- Slice 1 does not generate counterweight material yet (slice 2) or export it (slice 3). The solver API
-  (`correctionTarget` in `src/statics.js`) takes a list of correction planes (one = static; two-plane later) and an
-  `axialBand` constraint hook; no UI for either yet. The orbiting load is a point mass; it is not in the couple.
+Section **2c · Generate counterweight** (needs one Hub and one Boundary; the drive pin and orbiting load are optional):
+1. **Axial band** — *auto* (hub axial extent next to the pin, or the full hub extent without a pin), *planar face +
+   thickness* (pick a face; thickness along the axis, sign = side) or *typed start / end* (mm along the axis from the
+   axis point). Drawn as magenta slab planes.
+2. **Cell** (mm; blank = default from the boundary size) and **leftover tolerance** (g·mm; blank = the check-mode
+   tolerance, the G grade at the RPM, or 0.2 % of the needed correction).
+3. **Generate** (worker; progress bar and Cancel). Method: voxel nodes inside the Boundary, outside the Hub and inside
+   the band; one 6-connected set grown from the hub with the largest lever along the needed direction first; margin
+   refinement to the tolerance; marching tetrahedra with vertices exactly on the hub / boundary / band surfaces;
+   Taubin smoothing of the free surface; exact mass properties of the final mesh with the added material, re-targeted
+   and re-meshed while the leftover is over tolerance.
+4. The piece (magenta) is a Counterweight in check mode (residual, PASS / FAIL, *Check containment*) and a row in the
+   body table; it is saved in sessions. *Remove generated* deletes it. No STEP export yet (slice 3).
+
+## Limitations (0.2.0-alpha.3)
+
+- The generator is static only (one correction plane); the solver API (`correctionTarget` in `src/statics.js`) takes
+  a list of correction planes for two-plane later. The generated piece is not exported yet (slice 3). The orbiting
+  load is a point mass; it is not in the couple.
+- The generator balances hub + orbiting load only; existing Counterweight bodies are not subtracted from its target
+  (check mode adds them all up, so use one or the other).
+- The piece is voxel-shaped (cell size) with a lightly smoothed surface. Where it meets a concave boundary corner (a
+  bore, an inside corner) a surface edge can cut the corner by a fraction of a cell (the "facet-chord dip" shown;
+  ~0.16 mm at 1 mm cells on a real NX file); vertices themselves are always inside. Hub contact is judged within
+  2 × the mesh deflection.
+- Mass is near-minimal for the voxel grid (greedy by lever arm + margin refinement), not a proven optimum.
 - Per-body meshing needs a file without assembly structure (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) whose
   solids map 1:1 onto meshes; otherwise the whole-file plan of 0.1.x is used. It adds a calibration probe and up to
   three mesh groups, so large multi-body files take longer to import (a 9-body, 0.5M-triangle NX file: ~31 s in Chromium).

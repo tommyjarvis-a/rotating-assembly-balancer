@@ -29,6 +29,8 @@ const url = process.argv[2] || 'http://localhost:8765/', FIX = path.join(__dirna
       const x = await p.evaluate(() => ({ xss: window.__xss, imgs: document.querySelectorAll('img[src="x"]').length, cards: [...document.querySelectorAll('.card')].map(c => c.textContent).join(' | '), tools: rab.st.tools.map(t => t.kind), rho: rab.st.bodies.map(b => b.rho), src: rab.st.bodies.map(b => b.src) }));
       check('malicious session: no script runs, no injected elements', x.xss === undefined && x.imgs === 0, JSON.stringify(x).slice(0, 300));
       check('malicious session: payload fields rejected and reported', /invalid body field/.test(x.cards) && /invalid tool field/.test(x.cards) && x.tools.join() === 'sector,prism' && x.rho.every(r => typeof r === 'number') && x.src.every(s => !/</.test(s)), x.cards.slice(0, 200));
+      const gx = await p.evaluate(() => ({ name: rab.st.bodies.find(b => b.generated)?.name, out: document.querySelector('#genout').textContent, band: rab.st.bal.band, gen: rab.st.bal.gen }));
+      check('alpha.3: malicious generator fields rejected (band, cell, tol, piece name / material / summary), note shown as text', gx.name === 'Generated CW' && gx.band.start === null && gx.gen.cell === null && gx.gen.tol === null && /onerror/.test(gx.out) && /invalid generated-piece field/.test(x.cards) && /invalid generator setting/.test(x.cards), JSON.stringify(gx).slice(0, 300));
       check('tool name payload shown as text', await p.evaluate(() => [...document.querySelectorAll('#tools input[data-k="name"]')].some(i => /onerror/.test(i.value))));
       // ---- containment worker under the CSP ----
       await p.reload(); await load(FIX);
