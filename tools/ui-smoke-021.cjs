@@ -19,7 +19,7 @@ const url = process.argv[2] || 'http://localhost:8765/', FIX = path.join(__dirna
     const clickAt = async (body, pts) => { for (const q of pts) { const r = await p.evaluate(([body, q]) => { const [x, y] = rab.view.project(q), h = rab.view.pick(x, y); return h && rab.st.bodies[h.body].name === body ? { x, y } : null; }, [body, q]); if (r) { await p.mouse.click(r.x, r.y); return true; } } return false; };
     try {
       await p.goto(url); await load(FIX);
-      check('version 0.2.0-alpha.3 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.3');
+      check('version 0.2.0-alpha.4 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.4');
       check('generator asks for a Hub and a Boundary first', /set one Hub and one Boundary/.test(await p.textContent('#gendef')));
       await role('hub', 'hub'); await role('boundary', 'boundary'); await role('scroll', 'ignore'); await role('pin', 'ignore');
       await commit('#pine', 6); await commit('#pinang', 90); await p.selectOption('#load', 'b' + await idx('scroll'));

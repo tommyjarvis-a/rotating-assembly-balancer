@@ -61,15 +61,18 @@ export function cleanGenSettings(j) {
   return { o, bad };
 }
 // result summary of a generated piece: only known fields, numbers finite, notes short strings, key a short string
-const META_NUM = ['cell', 'cellW', 'allowed', 'cells', 'iterations', 'tol', 'volume', 'mass', 'components', 'open', 'hubVertices', 'hubGap', 'contactTol', 'dipBoundary', 'dipHub', 'reverted', 'outsideBoundary', 'crossBoundary', 'insideHub', 'outsideBand', 'ms', 'tris'];
+const META_NUM = ['cell', 'cellW', 'allowed', 'cells', 'iterations', 'tol', 'volume', 'mass', 'components', 'open', 'hubVertices', 'hubGap', 'contactTol', 'dipBoundary', 'dipHub', 'reverted', 'outsideBoundary', 'crossBoundary', 'insideHub', 'outsideBand', 'ms', 'tris', 'maxOut', 'inset', 'split', 'margin', 'checkTol'];
+// L13: these must be ≥ 0 (counts, sizes, tolerances); tol and cell must be > 0. The containment / contact / tolerance
+// fields are informational only: a restored piece is re-verified and judged against the current tolerance.
+const META_POS = new Set(['cell', 'cellW', 'tol', 'checkTol', 'margin', 'contactTol']);
 const META_VEC = { residual: 2, achieved: 2, target: 2, band: 2, grid: 3 };
 export function cleanGenMeta(m) {
   const o = {}; let bad = 0;
   if (m == null) return { o: null, bad };
   if (typeof m !== 'object' || Array.isArray(m)) return { o: null, bad: 1 };
-  for (const k of META_NUM) if (m[k] != null) { if (num(m[k])) o[k] = m[k]; else bad++; }
+  for (const k of META_NUM) if (m[k] != null) { if (num(m[k]) && (META_POS.has(k) ? m[k] > 0 : k === 'volume' || k === 'mass' || m[k] >= 0)) o[k] = m[k]; else bad++; }
   for (const [k, n] of Object.entries(META_VEC)) if (m[k] != null) { if (finiteVec(m[k], n)) o[k] = m[k].slice(); else bad++; }
-  if (m.capped != null) { if (typeof m.capped === 'boolean') o.capped = m.capped; else bad++; }
+  for (const k of ['capped', 'contained']) if (m[k] != null) { if (typeof m[k] === 'boolean') o[k] = m[k]; else bad++; }
   if (m.notes != null) { if (Array.isArray(m.notes) && m.notes.length <= 10 && m.notes.every(s => typeof s === 'string' && s.length <= 300)) o.notes = m.notes.slice(); else bad++; }
   if (m.key != null) { if (typeof m.key === 'string' && m.key.length <= 4000) o.key = m.key; else bad++; }
   return { o, bad };

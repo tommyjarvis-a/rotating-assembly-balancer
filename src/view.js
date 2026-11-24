@@ -40,7 +40,7 @@ export function createView(el) {
     cgRoot.scale.setScalar(pxScale(cgRoot.position));
     placeLabel(cgLabel, cgRoot.position);
   };
-  ren.setAnimationLoop(() => {
+  const frame = () => {
     ctl.update(); syncMarks(); const w = el.clientWidth, h = el.clientHeight;
     ren.setViewport(0, 0, w, h); ren.render(scene, cam);
     // M3: overlay pass after a depth clear so CG / origin / dashed line are not painted over by transparent bodies
@@ -48,7 +48,8 @@ export function createView(el) {
     tcam.position.copy(cam.position).sub(ctl.target).setLength(4); tcam.up.copy(cam.up); tcam.lookAt(0, 0, 0);
     ren.clearDepth(); ren.setScissorTest(true); ren.setScissor(0, 0, TRIAD, TRIAD); ren.setViewport(0, 0, TRIAD, TRIAD);
     ren.render(triad, tcam); ren.setScissorTest(false); ren.autoClear = true;
-  });
+  };
+  ren.setAnimationLoop(frame);
   const clear = g => { for (const c of [...g.children]) { g.remove(c); c.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); }); } };
   // click (not drag) on the canvas → onClick(hit | null, event)
   const ray = new Raycaster(); let down = null, onClick = () => { }, sel = new Set();
@@ -72,19 +73,23 @@ export function createView(el) {
     m.material.emissive.setHex(on ? 0x1f5fd6 : 0); m.material.emissiveIntensity = on ? 0.55 : 1;
     m.material.opacity = look ? (on ? Math.max(look.opacity, 0.35) : look.opacity) : on ? 1 : 0.85;
   });
+  const meshOf = b => {
+    const g = new BufferGeometry(); g.setAttribute('position', new BufferAttribute(b.pos32 || (b.pos instanceof Float32Array ? b.pos : new Float32Array(b.pos)), 3));
+    if (b.nrm) g.setAttribute('normal', new BufferAttribute(b.nrm instanceof Float32Array ? b.nrm : new Float32Array(b.nrm), 3)); else g.computeVertexNormals();
+    g.setIndex(new BufferAttribute(b.idx instanceof Uint32Array ? b.idx : new Uint32Array(b.idx), 1));
+    const m = new Mesh(g, new MeshStandardMaterial({ color: b.color || 0x9aa4b2, metalness: 0.3, roughness: 0.6, transparent: true, opacity: 0.85 }));
+    m.userData.color = b.color || 0x9aa4b2; m.visible = b.on; return m;
+  };
   let size = 100;
   return {
     setBodies(list) {
       clear(bodies);
-      for (const b of list) {
-        const g = new BufferGeometry(); g.setAttribute('position', new BufferAttribute(b.pos instanceof Float32Array ? b.pos : new Float32Array(b.pos), 3));
-        if (b.nrm) g.setAttribute('normal', new BufferAttribute(b.nrm instanceof Float32Array ? b.nrm : new Float32Array(b.nrm), 3)); else g.computeVertexNormals();
-        g.setIndex(new BufferAttribute(b.idx instanceof Uint32Array ? b.idx : new Uint32Array(b.idx), 1));
-        const m = new Mesh(g, new MeshStandardMaterial({ color: b.color || 0x9aa4b2, metalness: 0.3, roughness: 0.6, transparent: true, opacity: 0.85 }));
-        m.userData.color = b.color || 0x9aa4b2; m.visible = b.on; bodies.add(m);
-      }
+      for (const b of list) bodies.add(meshOf(b));
       sel = new Set(); paint();
     },
+    // 0.2.0-alpha.4 (L15): add / replace / remove one body (the generated piece) without rebuilding the others
+    setBody(i, b) { const old = bodies.children[i]; if (old) { bodies.remove(old); old.geometry.dispose(); old.material.dispose(); } const m = meshOf(b); bodies.add(m); if (i < bodies.children.length - 1) { bodies.children.splice(bodies.children.indexOf(m), 1); bodies.children.splice(i, 0, m); } paint(); },
+    removeBody(i) { const old = bodies.children[i]; if (!old) return; bodies.remove(old); old.geometry.dispose(); old.material.dispose(); sel = new Set([...sel].filter(j => j !== i).map(j => j > i ? j - 1 : j)); paint(); },
     fit() {
       const bb = new Box3().setFromObject(bodies.children.length ? bodies : tools); if (bb.isEmpty()) return;
       const c = bb.getCenter(new Vector3()); size = bb.getSize(new Vector3()).length() || 100;
@@ -184,6 +189,9 @@ export function createView(el) {
       return { pass: 'overlay', count: mats.length, mats };
     },
     onClick(f) { onClick = f; },
+    // for tests (L15): stop / restart the render loop so a Long Tasks measurement sees the app's own main-thread work
+    // and not software-GL frames (headless Chromium draws one frame in ~50 ms on SwiftShader)
+    renderLoop(on) { ren.setAnimationLoop(on ? frame : null); },
     project(p) { const v = new Vector3(...p).project(cam), r = ren.domElement.getBoundingClientRect(); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; },
     pick, cursor(c) { ren.domElement.style.cursor = c; },
     // for tests: triad axis directions on screen (x right, y up)

@@ -8,16 +8,17 @@ import { toStep } from './step-export.js';
 import { createView } from './view.js';
 import { ROLES, roleOf, setRole, roleIndex, inResiduals, normalizeRoles } from './roles.js';
 import { MATERIALS, CUSTOM, materialId, materialName, applyMaterial, addedMaterial, gcc, validRho } from './materials.js';
-import { movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
+import { momentUnc, verdictU, movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
 import { faceTris, fitCylinderTris, fitPlane } from './fit.js';
 import { BALANCE_DEFAULT, exportBalance, restoreBalance } from './balance-session.js';
 import { cleanTool } from './session-schema.js';
 import { autoBand, faceBand, typedBand } from './band.js';
 import { defaultCell } from './generator.js';
+import { containTol } from './contain.js';
 import { meshMoments } from './mass.js';
 import { GEN_SESSION_MAX, packGenerated, unpackGenerated, genDefaultTol } from './gen-session.js';
 
-const VERSION = '0.2.0-alpha.3', $ = s => document.querySelector(s);
+const VERSION = '0.2.0-alpha.4', $ = s => document.querySelector(s);
 // Without WebGL (blocked, no GPU and no software fallback) everything but the 3-D view still works.
 let view; try { view = createView($('#view')); } catch (e) {
   view = new Proxy({}, { get: () => () => null }); queueMicrotask(() => card('err', `<b>3-D view unavailable</b>: WebGL could not start (${esc(e.message)}). Mass properties, balancing and export still work; enable hardware acceleration in the browser settings for the view.`));
@@ -391,8 +392,12 @@ function balanceState() {
   const cws = hi.cw.filter(i => st.bodies[i].on), cwMom = sumMoments(cws.map(i => bodyMoments(st.bodies[i]))), cwS = cws.length ? staticOf(cwMom, ax) : null;
   const M = hubMom.m + (cws.length ? cwMom.m : 0);
   const band = bandNow(hub, pin), target = correctionTarget({ parts: [hubMom], points: [loadU], axis: ax, planes: [{}], constraints: { axialBand: band.w || null } });
-  const check = cws.length ? checkBalance({ base, cw: cwS.U, M, rpm: st.bal.rpm, tol: st.bal.tol, pinAng: pin ? pin.ang : null }) : null;
-  return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, band, cws, cwS, check, M, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
+  // M10: input uncertainty (g·mm) of hub + load and of the counterweights, from each body's mass-property ±
+  const uB = b => momentUnc(bmass(b), staticOf(bodyMoments(b), ax).mag, b.unc);
+  const uHub = uB(hub), uLoad = lb && pin ? Math.abs(lm) * pin.e * (lb.unc?.dV || 0) : 0, uCw = cws.reduce((a, i) => a + uB(st.bodies[i]), 0);
+  const unc = { hub: uHub, load: uLoad, base: uHub + uLoad, cw: uCw, total: uHub + uLoad + uCw };
+  const check = cws.length ? checkBalance({ base, cw: cwS.U, M, rpm: st.bal.rpm, tol: st.bal.tol, pinAng: pin ? pin.ang : null, unc: unc.total }) : null;
+  return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, band, cws, cwS, check, M, unc, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
 }
 function renderBalance(fr, sp) {
   renderPin();
@@ -412,16 +417,36 @@ function renderBalance(fr, sp) {
   if (!S.check) { chk.innerHTML = S.hi.cw.length ? '' : '<p class="hint">Check mode: set existing counterweight bodies to <b>Counterweight (existing)</b>.</p>'; return; }
   const c = S.check, pct = c.pct == null ? '—' : (100 * c.pct).toFixed(2) + ' %';
   const ou = c.state ? `<span class="ou ${c.state}" id="ouflag">${c.state === 'over' ? 'OVER-balanced' : c.state === 'under' ? 'UNDER-balanced' : 'matched'} ×${fmt(c.ratio, 4)}</span>` : '—';
-  const verdict = c.pass == null ? (st.bal.tol?.kind === 'G' && st.bal.tol.value > 0 && !(st.bal.rpm > 0) ? '<span class="hint" id="needrpm">enter an RPM to grade against G' + esc(st.bal.tol.value) + '</span>' : '<span class="hint">set a tolerance (g·mm or G grade)</span>') : `<span class="verdict ${c.pass ? 'pass' : 'fail'}" id="verdict">${c.pass ? 'PASS' : 'FAIL'}</span> |resid| ${fmt(c.resid.mag, 5)} ${c.pass ? '≤' : '>'} ${fmt(c.limit, 5)} g·mm${st.bal.tol.kind === 'G' ? ` (G${st.bal.tol.value} at ${st.bal.rpm} rpm, M ${fmt(S.M, 5)} g)` : ''}`;
+  const cOut = containFail(S.cws);
+  const verdict = c.verdict == null ? (st.bal.tol?.kind === 'G' && st.bal.tol.value > 0 && !(st.bal.rpm > 0) ? '<span class="hint" id="needrpm">enter an RPM to grade against G' + esc(st.bal.tol.value) + '</span>' : '<span class="hint">set a tolerance (g·mm or G grade)</span>')
+    : verdictHtml(cOut ? 'fail' : c.verdict, c.resid.mag, c.unc, c.limit, 'verdict', cOut) + (st.bal.tol.kind === 'G' ? ` <span class="hint">(G${esc(st.bal.tol.value)} at ${esc(st.bal.rpm)} rpm, M ${fmt(S.M, 5)} g)</span>` : '');
   chk.innerHTML = `<h3 class="hint">Check mode — ${S.cws.length} existing counterweight bod${S.cws.length === 1 ? 'y' : 'ies'}</h3><table>
     ${row('Hub + load', fmt(c.base.mag, 5), ang(c.base.ang))}
     ${row('Counterweight', fmt(c.cw.mag, 5), ang(c.cw.ang), `m ${fmt(S.cwS.m, 5)} g${c.cwRelPin != null ? ` · ${fmt(c.cwRelPin, 2)}° from the pin` : ''}`)}
-    ${row('<b>Residual</b>', `<span id="resid0">${fmt(c.resid.mag, 5)}</span>`, ang(c.resid.ang), `corrected <b id="pctcorr">${pct}</b>`)}
+    ${row('<b>Residual</b>', `<span id="resid0">${fmt(c.resid.mag, 5)}</span> <span id="residu">± ${fmt(c.unc, 3)}</span>`, ang(c.resid.ang), `corrected <b id="pctcorr">${pct}</b> · ± = input uncertainty (hub ${fmt(S.unc.hub, 3)}, load ${fmt(S.unc.load, 3)}, counterweights ${fmt(S.unc.cw, 3)} g·mm)`)}
     </table>
     <div>Balance: ${ou} <span class="hint">(projection of the counterweight on −(hub+load) ÷ |hub+load|; &gt;1 over, &lt;1 under)</span></div>
     <div>Angle error ${c.angErr == null ? '—' : `<span class="${c.angFlag ? 'flag' : ''}" id="angerr">${fmt(c.angErr, 3)}°</span>`} · perpendicular ${c.perp == null ? '—' : fmt(100 * c.perp, 3) + ' % of |hub+load|'}${c.angFlag ? ' <span class="flag">⚠ large angle (perpendicular) error</span>' : ''}</div>
     <div>ISO 1940 residual (rotor = hub + counterweight, ${fmt(S.M, 5)} g): ${isoTxt(c.iso)}</div>
     <div>${verdict}</div><div id="containres">${renderContain()}</div>`;
+}
+// M10: one verdict rendering for check mode and the generator. v: 'pass' | 'fail' | 'unresolved'.
+function verdictHtml(v, R, U, limit, id, contain = '') {
+  const ru = `residual ${fmt(R, 5)} ± ${fmt(U, 3)} g·mm`;
+  if (v === 'unresolved') return `<span class="verdict unres" id="${id}">CAN'T RESOLVE</span> Can't resolve: ${ru} exceeds tolerance resolution (tol ${fmt(limit, 4)} g·mm). Use a finer mesh (accurate mass props, a CAD file with a tighter modelling tolerance) or a looser tolerance (≥ ${fmt(R + U, 4)} g·mm).`;
+  const why = contain ? ` — <span class="flag">${esc(contain)}</span>` : v === 'pass' ? ` (|R| + U ≤ ${fmt(limit, 4)})` : ` (|R| − U > ${fmt(limit, 4)})`;
+  return `<span class="verdict ${v === 'pass' ? 'pass' : 'fail'}" id="${id}">${v === 'pass' ? 'PASS' : 'FAIL'}</span> ${ru}${why}`;
+}
+// M11: a current containment result with a body outside blocks PASS (check mode and the generated piece).
+function containFail(idxs) {
+  const c = st.check; if (!c || c.key !== checkKey()) return genContainFail(idxs);
+  const bad = c.results.filter(r => idxs.includes(r.i) && !r.inside); return bad.length ? `containment: ${bad.map(r => r.name).join(', ')} outside the Boundary` : genContainFail(idxs);
+}
+// the generated piece's own (measured) containment also blocks a check-mode PASS
+function genContainFail(idxs) {
+  const gi = st.bodies.findIndex(b => b.generated); if (gi < 0 || !idxs.includes(gi) || !st.gen) return '';
+  const v = st.gen.verify, c = v ? (v.pending ? null : v.contained) : st.gen.meta?.contained;
+  return c === false ? `containment: ${st.bodies[gi].name} outside the Boundary` : '';
 }
 // containment (worker, Cancel)
 let cjob = null;
@@ -438,7 +463,7 @@ function runContain() {
   if (cjob) return msg('a check is already running', true);
   const B = st.bodies[hi.boundary], H = st.bodies[hi.hub], defl = [B, ...hi.cw.map(i => st.bodies[i])].map(b => b.mesh?.deflection || 0);
   const diag = Math.hypot(...[0, 1, 2].map(k => { let lo = 1 / 0, hi2 = -1 / 0; for (let i = k; i < B.pos.length; i += 3) { lo = Math.min(lo, B.pos[i]); hi2 = Math.max(hi2, B.pos[i]); } return hi2 - lo; }));
-  const tol = Math.max(1e-6 * diag, 2 * Math.max(...defl)), key = checkKey();
+  const tol = containTol(diag, defl), key = checkKey();
   const w = new Worker(new URL('./check-worker.js', import.meta.url), { type: 'module' }), t0 = performance.now(); let stage = 'Starting', done = false;
   const finish = () => { if (done) return; done = true; clearInterval(tick); w.terminate(); cjob = null; $('#cjob').hidden = true; };
   const tick = setInterval(() => { $('#cjobmsg').textContent = `Containment: ${stage}… ${((performance.now() - t0) / 1000).toFixed(0)} s`; }, 250);
@@ -448,7 +473,7 @@ function runContain() {
     else if (d.type === 'error') { finish(); msg('containment check failed: ' + d.message, true); }
     else if (d.type === 'done') {
       finish(); st.check = { key, tol, results: d.results, ms: performance.now() - t0 };
-      const flat = []; for (const r of d.results) { const b = st.bodies[r.i]; for (const v of r.outside) flat.push(b.pos[3 * v], b.pos[3 * v + 1], b.pos[3 * v + 2]); }
+      const flat = []; for (const r of d.results) for (const x of r.outPts) flat.push(x);
       view.setOutside(flat); msg(`checked in ${((performance.now() - t0) / 1000).toFixed(1)} s`); update();
     }
   };
@@ -487,22 +512,41 @@ function renderGen(S, sp) {
     const ref = Bd || S.hub; view.setBand(ref ? axisFrame() : null, band.w[0], band.w[1], ref ? radialMax(ref) * 1.03 : 0);
   }
   const T = S.target?.planes[0];
-  $('#gendef').textContent = S.hub && Bd ? `default cell ${fmt(defaultCell(bbDiag(Bd)), 3)} mm · leftover tolerance ${fmt(genTol(S).tol, 4)} g·mm (${genTol(S).how})${T ? ` · needed ${fmt(T.mag, 5)} g·mm at ${ang(T.ang)}` : ''}` : 'set one Hub and one Boundary to generate';
+  $('#gendef').textContent = S.hub && Bd ? `default cell ${fmt(defaultCell(bbDiag(Bd)), 3)} mm · leftover tolerance ${fmt(genTol(S).tol, 4)} g·mm (${genTol(S).how})${T ? ` · needed ${fmt(T.mag, 5)} g·mm at ${ang(T.ang)}` : ''}${S.unc && genTol(S).tol < S.unc.base ? ` · ⚠ the tolerance is below the input uncertainty ± ${fmt(S.unc.base, 3)} g·mm (hub + load): the verdict will be "can't resolve" — loosen it or use a finer mesh` : ''}` : 'set one Hub and one Boundary to generate';
   const g = genBody(); $('#genremove').hidden = !g;
   const el = $('#genout'); if (!g && !st.gen?.needsRegenerate) { el.innerHTML = ''; return; }
   if (!g) { el.innerHTML = `<p class="flag">⚠ ${esc(st.gen.note || 'regenerate the counterweight')}</p>`; return; }
-  const r = st.gen?.meta || {}, mom = bodyMoments(g), Sg = staticOf(mom, st.axis), pin = S.pin, d = derive(g.vol);
-  const left = S.target ? vec([S.base.U[0] + Sg.U[0], S.base.U[1] + Sg.U[1]]) : null, tol = r.tol ?? genTol(S).tol, pass = left ? left.mag <= tol : null;
+  const r = st.gen?.meta || {}, v = st.gen?.verify || null, mom = bodyMoments(g), Sg = staticOf(mom, st.axis), pin = S.pin, d = derive(g.vol);
+  // M10 / L13: leftover ± input uncertainty and the tolerance from the CURRENT inputs (never the stored summary)
+  const left = S.target ? vec([S.base.U[0] + Sg.U[0], S.base.U[1] + Sg.U[1]]) : null, tol = genTol(S).tol, U = S.unc ? S.unc.base + momentUnc(mom.m, Sg.mag, g.unc) : 0;
   const rel = pin ? ((Sg.ang - pin.ang) % 360 + 360) % 360 : null, stale = st.gen?.key && st.gen.key !== genKey(S);
+  // M11 / L14: containment and hub contact are part of the verdict; on a restored piece they are re-measured (verify)
+  const ctn = v ? (v.pending ? null : v.contained) : r.contained ?? null, nOut = v && !v.pending ? v.nOut : r.outsideBoundary, nCross = v && !v.pending ? v.crossings : r.crossBoundary;
+  const maxOut = v && !v.pending ? v.maxOut : r.maxOut, cTol = v && !v.pending ? v.tol : r.checkTol, hubN = v && !v.pending ? v.hubVertices : r.hubVertices, hubMin = v && !v.pending ? v.hubMin : r.hubGap;
+  const touch = hubN > 0, why = ctn === false ? `outside the Boundary (${nOut} vertices outside, ${nCross ?? '?'} edges cross; max protrusion ${fmt(maxOut || 0, 3)} mm)` : !touch && ctn != null ? 'does not touch the hub' : '';
+  const vd = left ? verdictU(left.mag, U, tol) : null, verdictTxt = !left ? '' : ctn == null ? '<span class="hint" id="genverdict" data-v="pending">verifying containment…</span>' : verdictHtml(why ? 'fail' : vd, left.mag, U, tol, 'genverdict', why);
+  const cline = ctn == null ? '<span class="hint">containment: verifying…</span>' : ctn ? `<span class="verdict pass" id="gencontain">inside</span> the Boundary (Check-containment test, tol ${fmt(cTol, 3)} mm: ${esc(nOut)} vertices outside, ${esc(nCross ?? 0)} edges cross; measured max protrusion ${fmt(maxOut || 0, 3)} mm)`
+    : `<span class="verdict fail" id="gencontain">outside</span> <span class="flag">the Boundary: ${esc(nOut)} vertices outside, ${esc(nCross ?? '?')} edges cross, measured max protrusion ${fmt(maxOut || 0, 3)} mm (tol ${fmt(cTol, 3)} mm) — marked red in the view</span>`;
+  const hline = hubN == null ? '' : touch ? `touches the hub (${esc(hubN)} vertices within ${fmt((v && !v.pending ? v.contactTol : r.contactTol) || 0, 3)} mm of the hub mesh; closest ${fmt(hubMin || 0, 3)} mm)` : `<span class="flag">does not touch the hub: closest ${hubMin == null ? '> 2 cells' : fmt(hubMin, 3) + ' mm'}</span>`;
   el.innerHTML = `${stale ? '<p class="flag" id="genstale">⚠ inputs changed since generation (hub, boundary, axis, band, load, material, cell or tolerance) — regenerate</p>' : ''}
     <table><tr><td>Piece <i>${esc(g.name)}</i></td><td>mass <b id="genmass">${fmt(mom.m, 5)}</b> g</td><td>volume ${fmt(d.m, 6)} mm³</td></tr>
     <tr><td>CG (world)</td><td colspan="2">${d.c.map(v => fmt(v, 5)).join(', ')} mm · offset ${fmt(Sg.offset, 5)} mm</td></tr>
     <tr><td>m·r</td><td>${fmt(Sg.mag, 5)} g·mm at ${ang(Sg.ang)}</td><td>${rel != null ? `<b id="genrel">${fmt(rel, 2)}°</b> from the pin` : 'no pin'}</td></tr>
-    <tr><td>Leftover (hub + load + piece)</td><td><span id="genleft">${left ? fmt(left.mag, 5) : '—'}</span> g·mm${left ? ' at ' + ang(left.ang) : ''}</td><td>${pass == null ? '' : `<span class="verdict ${pass ? 'pass' : 'fail'}" id="genverdict">${pass ? 'PASS' : 'FAIL'}</span> tol ${fmt(tol, 4)}`}</td></tr></table>
-    <div class="hint">${r.cells ? `${esc(r.cells)} cells of ${fmt(r.cell, 3)} × ${fmt(r.cell, 3)} × ${fmt(r.cellW, 3)} mm · ${esc(r.iterations)} mesh iteration${r.iterations === 1 ? '' : 's'} · ${esc(r.tris)} triangles · ${esc(r.components)} piece${r.components === 1 ? '' : 's'}${r.open ? `, ${esc(r.open)} open edges` : ', closed'} · ${r.hubVertices ? `touches the hub (${esc(r.hubVertices)} contact vertices within ${fmt(r.contactTol, 2)} mm)` : `<span class="flag">does not touch the hub: gap ${r.hubGap == null ? '> 2 cells' : fmt(r.hubGap, 3) + ' mm'}</span>`} · vertices outside boundary ${esc(r.outsideBoundary)}, inside hub ${esc(r.insideHub)}, outside band ${esc(r.outsideBand)}${r.crossBoundary ? ` · ${esc(r.crossBoundary)} edges cut a concave boundary corner` : ''}${r.dipBoundary > 0 || r.dipHub > 0 ? ` (facet-chord dip ≤ ${fmt(Math.max(r.dipBoundary, r.dipHub), 3)} mm)` : ''} · ${fmt(r.ms / 1000, 3)} s` : 'restored from the session'}${r.notes?.length ? ' · ' + esc(r.notes.join('; ')) : ''}</div>
+    <tr><td>Leftover (hub + load + piece)</td><td><span id="genleft">${left ? fmt(left.mag, 5) : '—'}</span> <span id="genleftu">± ${fmt(U, 3)}</span> g·mm${left ? ' at ' + ang(left.ang) : ''}</td><td>tol ${fmt(tol, 4)} g·mm</td></tr></table>
+    <div>${verdictTxt}</div>
+    <div>${cline}</div>
+    <div class="hint">± = input uncertainty: hub ${fmt(S.unc?.hub || 0, 3)} + load ${fmt(S.unc?.load || 0, 3)} g·mm from the bodies' mass-property ± (the piece's own mesh is exact).</div>
+    <div class="hint">${r.cells ? `${esc(r.cells)} cells of ${fmt(r.cell, 3)} × ${fmt(r.cell, 3)} × ${fmt(r.cellW, 3)} mm · ${esc(r.iterations)} mesh iteration${r.iterations === 1 ? '' : 's'} · ${esc(r.tris)} triangles · ${esc(r.components)} piece${r.components === 1 ? '' : 's'}${r.open ? `, ${esc(r.open)} open edges` : ', closed'} · ` : 'restored from the session (containment and hub contact re-measured) · '}${hline}${r.cells ? ` · inside hub ${esc(r.insideHub)}, outside band ${esc(r.outsideBand)} · ${esc(r.inset || 0)} vertices inset by ${fmt(r.margin || 0, 3)} mm, ${esc(r.split || 0)} edges split · ${fmt(r.ms / 1000, 3)} s` : ''}${r.notes?.length ? ' · ' + esc(r.notes.join('; ')) : ''}</div>
     <div class="hint">The piece is a Counterweight in check mode above and a row in the body table. No export yet.</div>`;
 }
 let gjob = null;
+// L14 contact, M11 margin and the Check-containment tolerance (same as runContain). Hub contact is judged within the
+// hub mesh deflection plus 1.5 × the margin (where the hub meets the Boundary the contact vertices are inset by the
+// margin), capped at a tenth of the cell — not the old fixed 0.5 mm.
+const genTols = (H, Bd, cell) => { const margin = Math.max(Bd.mesh?.deflection || 0, 1e-3 * cell); return {
+  contactTol: Math.max(1e-6 * bbDiag(Bd), 1e-3 * cell, Math.min((H.mesh?.deflection || 0) + 1.5 * margin, 0.1 * cell)),
+  margin, checkTol: containTol(bbDiag(Bd), [Bd.mesh?.deflection || 0]) }; };
+const xfer = b => ({ pos: b.pos.slice(), idx: b.idx.slice() }); // copies whose buffers are transferred (no structured clone)
 function runGen() {
   const S = balanceState(), msg = (m, bad) => { $('#genmsg').textContent = m; $('#genmsg').className = 'hint' + (bad ? ' bad' : ''); };
   if (!S.hub) return msg('set one body as Hub first', true);
@@ -520,28 +564,48 @@ function runGen() {
     if (d.type === 'progress') { stage = d.stage; frac = d.frac; }
     else if (d.type === 'error') { finish(); msg('generator: ' + d.message, true); }
     else if (d.type === 'done') {
-      finish(); const r = d.result, { pos, idx, ...meta } = r; meta.tris = idx.length / 3;
-      dropGenerated();
-      const name = uniqueGenName(), b = { name, stepName: '(generated)', product: '', pos, idx, vol: meshMoments(pos, idx), rho: am.rho, sign: 1, on: true, src: 'generated', mat: materialId(am.rho), role: 'cw', generated: true, faces: [] };
-      st.bodies.push(b); st.gen = { key, meta, needsRegenerate: false }; st.check = null; view.setOutside(null);
-      view.setBodies(st.bodies); view.setRoles(viewRoles()); view.select(st.sels); renderBodies(); renderBalanceInputs(); update();
-      msg(`generated in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.capped ? ' — ⚠ the allowed region is too small for a full correction' : ''}`, r.capped);
+      finish(); const r = d.result, { pos, idx, vol, outPts, ...meta } = r; meta.tris = idx.length / 3; delete meta.frame;
+      const g = st.bodies.findIndex(x => x.generated); if (g >= 0) { st.bodies.splice(g, 1); st.sels = st.sels.filter(j => j !== g); }
+      const b = { name: uniqueGenName(), stepName: '(generated)', product: '', pos, idx, pos32: d.view.pos32, nrm: d.view.nrm, vol, rho: am.rho, sign: 1, on: true, src: 'generated', mat: materialId(am.rho), role: 'cw', generated: true, faces: [] };
+      st.bodies.push(b); st.gen = { key, meta, needsRegenerate: false }; st.check = null;
+      view.setOutside(meta.contained ? null : Array.from(outPts)); if (g >= 0) view.removeBody(g); view.setBody(st.bodies.length - 1, b); view.setRoles(viewRoles()); view.select(st.sels);
+      // L15: the DOM refresh is yielded to the next frame so the worker's result attaches without a long task
+      requestAnimationFrame(() => { renderBodies(); renderBalanceInputs(); update(); });
+      msg(`generated in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.capped ? ' — ⚠ the allowed region is too small for a full correction' : ''}${meta.contained ? '' : ' — ⚠ the piece is not inside the Boundary'}`, r.capped || !meta.contained);
     }
   };
   w.onerror = e => { e.preventDefault?.(); finish(); msg('generator worker failed: ' + (e.message || 'out of memory?'), true); };
-  const copy = b => ({ pos: Float64Array.from(b.pos), idx: Uint32Array.from(b.idx) });
-  w.postMessage({ boundary: copy(Bd), hub: copy(H), axis: { p: st.axis.p, d: st.axis.d }, band: S.band.w, target: T.U, rho: am.rho, cell, tol, contactTol: Math.max(1e-6 * bbDiag(Bd), 2 * Math.max(H.mesh?.deflection || 0, Bd.mesh?.deflection || 0), 1e-3 * cell) });
+  const bd = xfer(Bd), hb = xfer(H);
+  w.postMessage({ boundary: bd, hub: hb, axis: { p: st.axis.p, d: st.axis.d }, band: S.band.w, target: T.U, rho: am.rho, cell, tol, ...genTols(H, Bd, cell) }, [bd.pos.buffer, bd.idx.buffer, hb.pos.buffer, hb.idx.buffer]);
+}
+// L13: a restored piece's containment and hub contact are re-measured in the worker (same functions), never trusted
+function verifyGen() {
+  const S = balanceState(), g = genBody(), Bd = st.bodies[S.hi?.boundary];
+  if (!g || !S.hub || !Bd) { if (st.gen) st.gen.verify = { pending: false, contained: null }; return; }
+  const cell = st.gen?.meta?.cell > 0 ? st.gen.meta.cell : defaultCell(bbDiag(Bd)), t = genTols(S.hub, Bd, cell), w = new Worker(new URL('./gen-worker.js', import.meta.url), { type: 'module' });
+  st.gen.verify = { pending: true }; const me = st.gen;
+  w.onmessage = ({ data: d }) => {
+    if (d.type === 'progress') return; w.terminate(); if (st.gen !== me) return;
+    if (d.type === 'verified') { me.verify = { pending: false, ...d.verify }; view.setOutside(d.verify.contained ? null : Array.from(d.verify.outPts)); }
+    else me.verify = { pending: false, contained: null, error: d.message };
+    update();
+  };
+  w.onerror = e => { e.preventDefault?.(); w.terminate(); if (st.gen === me) { me.verify = { pending: false, contained: null, error: 'worker failed' }; update(); } };
+  const bd = xfer(Bd), hb = xfer(S.hub), pc = xfer(g);
+  w.postMessage({ verify: { boundary: bd, hub: hb, pos: pc.pos, idx: pc.idx, tol: t.checkTol, contactTol: t.contactTol } }, [bd.pos.buffer, bd.idx.buffer, hb.pos.buffer, hb.idx.buffer, pc.pos.buffer, pc.idx.buffer]);
 }
 const uniqueGenName = () => { let n = 'Generated CW', k = 2; while (st.bodies.some(b => b.name === n)) n = `Generated CW ${k++}`; return n; };
 function dropGenerated() { const i = st.bodies.findIndex(b => b.generated); if (i < 0) return false; st.bodies.splice(i, 1); st.sels = st.sels.filter(j => j !== i).map(j => j > i ? j - 1 : j); st.sel = st.sels.at(-1) ?? -1; st.gen = null; return true; }
-function removeGenerated() { if (!dropGenerated()) return; st.check = null; view.setOutside(null); view.setBodies(st.bodies); view.setRoles(viewRoles()); view.select(st.sels); renderBodies(); renderBalanceInputs(); update(); $('#genmsg').textContent = 'generated piece removed'; }
+function removeGenerated() { const i = st.bodies.findIndex(b => b.generated); if (i < 0) return; dropGenerated(); st.check = null; view.setOutside(null); view.removeBody(i); view.setRoles(viewRoles()); view.select(st.sels); renderBodies(); renderBalanceInputs(); update(); $('#genmsg').textContent = 'generated piece removed'; }
 function genSession() { const g = genBody(); if (!g) return st.gen?.needsRegenerate ? { needsRegenerate: true, meta: st.gen.meta, note: st.gen.note } : null; return packGenerated(g, { ...(st.gen?.meta || {}), key: st.gen?.key || null }); }
-function restoreGenerated(j) {
-  const g = unpackGenerated(j); if (!g) return;
-  if (g.bad) card('warn', `Session: ${g.bad} invalid generated-piece field${g.bad > 1 ? 's' : ''} ignored.`);
-  if (g.needsRegenerate) { st.gen = { needsRegenerate: true, meta: g.meta, note: g.note }; card('warn', `Session: ${esc(g.note)}.`); return; }
-  st.bodies.push({ name: g.name, stepName: '(generated)', product: '', pos: g.pos, idx: g.idx, vol: meshMoments(g.pos, g.idx), rho: g.rho, sign: 1, on: g.on, src: 'generated', mat: g.mat ?? materialId(g.rho), role: 'cw', generated: true, faces: [] });
-  st.gen = { key: g.meta?.key || null, meta: g.meta, needsRegenerate: false };
+// L12 / L13: staged (no state change); the piece's verdict, tolerance, containment and hub contact are recomputed
+function stageGenerated(j) {
+  const g = unpackGenerated(j), cards = []; if (!g) return { gen: null, body: null, cards };
+  if (g.bad) cards.push(['warn', `Session: ${g.bad} invalid generated-piece field${g.bad > 1 ? 's' : ''} ignored.`]);
+  if (g.needsRegenerate) { cards.push(['warn', `Session: ${esc(g.note)}.`]); return { gen: { needsRegenerate: true, meta: g.meta, note: g.note }, body: null, cards }; }
+  const meta = { ...g.meta }; for (const k of ['tol', 'contained', 'outsideBoundary', 'crossBoundary', 'insideHub', 'hubVertices', 'hubGap', 'contactTol', 'maxOut', 'dipBoundary', 'checkTol']) delete meta[k];
+  const body = { name: g.name, stepName: '(generated)', product: '', pos: g.pos, idx: g.idx, vol: meshMoments(g.pos, g.idx), rho: g.rho, sign: 1, on: g.on, src: 'generated', mat: g.mat ?? materialId(g.rho), role: 'cw', generated: true, faces: [] };
+  return { gen: { key: g.meta?.key || null, meta, needsRegenerate: false, verify: { pending: true } }, body, cards };
 }
 // ---------- per-body table for comparison with NX Measure Bodies ----------
 // Volume to 0.001 mm³ (and ≥ 7 significant figures), mass g, density g/cc, CG from the model origin to 0.0001 mm.
@@ -587,29 +651,48 @@ function exportAs(kind) {
 }
 function loadSession(j) {
   if (!j || typeof j !== 'object' || !Array.isArray(j.tools)) return status('JSON has no tools[]');
+  // L12: build the complete new state first (on copies of the bodies), then commit it; any error leaves the
+  // current state untouched (and a failing commit is rolled back).
+  let S;
+  try { S = stageSession(j); } catch (e) { card('err', `<b>Session not loaded</b>: ${esc(e.message)} — nothing was changed.`); return status('Session load failed (nothing changed)'); }
+  const prev = { tools: st.tools, bodies: st.bodies, bal: st.bal, gen: st.gen, check: st.check, axis: st.axis, sels: st.sels, sel: st.sel, cg: st.cg };
+  try { commitSession(S); }
+  catch (e) {
+    Object.assign(st, prev); view.setOutside(null); renderBalanceInputs(); renderBodies(); renderTools(); renderAxis(); update();
+    card('err', `<b>Session not loaded</b>: ${esc(e.message)} — the previous state was restored.`); status('Session load failed (previous state restored)');
+  }
+}
+function stageSession(j) {
   // H4: tools are rebuilt from schema-checked fields only (src/session-schema.js)
-  let badTools = 0; st.tools = j.tools.slice(0, 200).flatMap(t => { const { o, bad } = cleanTool(t); badTools += bad; return o ? [makeTool(o.kind, o)] : []; });
-  if (badTools) card('warn', `Session: ${badTools} invalid tool field${badTools > 1 ? 's' : ''} ignored.`);
-  dropGenerated();
-  const out = restoreSession(j, st.bodies);
-  const rb = restoreBalance(j.balance, st.bodies); st.bal = rb.bal; st.check = null; view.setOutside(null);
-  for (const b of st.bodies) b.mat ??= materialId(b.rho);
-  const notes = [...(out.roleNotes || []), ...rb.notes]; if (notes.length) card('warn', `Session: ${esc(notes.join('; '))}.`);
-  restoreGenerated(j.generated);
+  let badTools = 0; const tools = j.tools.slice(0, 200).flatMap(t => { const { o, bad } = cleanTool(t); badTools += bad; return o ? [makeTool(o.kind, o)] : []; });
+  const bodies = st.bodies.filter(b => !b.generated).map(b => ({ ...b }));
+  const out = restoreSession(j, bodies), rb = restoreBalance(j.balance, bodies);
+  for (const b of bodies) b.mat ??= materialId(b.rho);
+  const gen = stageGenerated(j.generated);
+  const ax = j.axis && typeof j.axis === 'object' ? j.axis : {}, a = makeAxis(ax.point || ax.origin || [0, 0, 0], ax.direction || (Array.isArray(ax.R) ? ax.R.slice(6, 9) : null) || [0, 0, 1]); // 0.1.x sessions: origin + R
+  const src = typeof (ax.source ?? ax.choice) === 'string' ? (ax.source ?? ax.choice) : '';
+  return { tools, badTools, bodies, out, rb, gen, a, src, hasCG: !!out.cg, densStale: out.densMatch.stale && (Array.isArray(j.bodies) ? j.bodies.length : 0) };
+}
+function commitSession(S) {
+  st.tools = S.tools; st.bodies = S.bodies; if (S.gen.body) st.bodies.push(S.gen.body); st.gen = S.gen.gen;
+  st.bal = S.rb.bal; st.check = null; view.setOutside(null);
+  if (S.badTools) card('warn', `Session: ${S.badTools} invalid tool field${S.badTools > 1 ? 's' : ''} ignored.`);
+  const notes = [...(S.out.roleNotes || []), ...S.rb.notes]; if (notes.length) card('warn', `Session: ${esc(notes.join('; '))}.`);
+  for (const [k, h] of S.gen.cards) card(k, h);
   renderBalanceInputs();
-  if (out.densMatch.stale && (j.bodies || []).length) card('warn', `Session: some body densities were not applied (${esc(out.densMatch.notice) || 'could not match them uniquely'}).`);
+  if (S.densStale) card('warn', `Session: some body densities were not applied (${esc(S.out.densMatch.notice) || 'could not match them uniquely'}).`);
   renderBodies(); renderTools(); renderAxis();
-  const ax = j.axis || {}, a = makeAxis(ax.point || ax.origin || [0, 0, 0], ax.direction || ax.R?.slice(6, 9) || [0, 0, 1]); // 0.1.x sessions: origin + R
-  const src = ax.source ?? ax.choice; if (!a.error) setAxis(a, PRESET[src] || (src?.[0] === 'P' && st.bodies[+src.slice(1)]) ? src : 'C'); else update();
-  if (j.assemblyCG && Array.isArray(j.assemblyCG.c)) {
-    st.sels = out.sels; st.sel = st.sels.at(-1) ?? -1; view.select(st.sels);
+  const src = S.src; if (!S.a.error) setAxis(S.a, PRESET[src] || (src[0] === 'P' && st.bodies[+src.slice(1)]) ? src : 'C'); else update();
+  if (S.hasCG) {
+    st.sels = S.out.sels; st.sel = st.sels.at(-1) ?? -1; view.select(st.sels);
     document.querySelectorAll('#bodies tr[data-row]').forEach(r => r.classList.toggle('sel', st.sels.includes(+r.dataset.row)));
-    st.cg = out.cg;
-    if (out.cg.dropped) card('warn', `Session: the saved assembly CG was not restored (${esc(out.cg.notice) || 'bodies changed or did not match uniquely'}). Click Calculate CG for the current selection.`);
-    else if (out.cg.stale) card('warn', `Session: the saved assembly CG is stale${out.cg.notice ? ' (' + esc(out.cg.notice) + ')' : ''}. Click Calculate CG to refresh.`);
+    st.cg = S.out.cg;
+    if (S.out.cg.dropped) card('warn', `Session: the saved assembly CG was not restored (${esc(S.out.cg.notice) || 'bodies changed or did not match uniquely'}). Click Calculate CG for the current selection.`);
+    else if (S.out.cg.stale) card('warn', `Session: the saved assembly CG is stale${S.out.cg.notice ? ' (' + esc(S.out.cg.notice) + ')' : ''}. Click Calculate CG to refresh.`);
     renderCG();
   }
   status('Session loaded');
+  if (st.gen && !st.gen.needsRegenerate && genBody()) verifyGen();
 }
 
 const drop = $('#drop');

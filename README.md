@@ -176,6 +176,9 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - `tools/ui-smoke-021.cjs` (0.2.0-alpha.3): axial band modes and slabs, generator Cancel, generated piece (PASS,
   one closed piece touching the hub, angle, colour, check mode, containment, body table, < 20 s), session round trip
   with the mesh, stale flag and Remove.
+- `tools/ui-smoke-020a4.cjs` (0.2.0-alpha.4): residual ± U and CAN'T RESOLVE, generator containment == Check
+  containment, hub contact, a tampered restored piece re-measured (outside, FAIL, red marks), invalid assembly CG,
+  malicious session, Long Tasks observer (< 100 ms).
 
 ## Size, dependencies, token/code efficiency
 
@@ -241,20 +244,27 @@ Section **2c · Generate counterweight** (needs one Hub and one Boundary; the dr
    refinement to the tolerance; marching tetrahedra with vertices exactly on the hub / boundary / band surfaces;
    Taubin smoothing of the free surface; exact mass properties of the final mesh with the added material, re-targeted
    and re-meshed while the leftover is over tolerance.
+   0.2.0-alpha.4: the piece is kept inside the Boundary (margin = boundary mesh deflection) and verified with the
+   Check-containment function; leftover is shown as X ± U with PASS / FAIL / CAN'T RESOLVE (see Limitations).
 4. The piece (magenta) is a Counterweight in check mode (residual, PASS / FAIL, *Check containment*) and a row in the
    body table; it is saved in sessions. *Remove generated* deletes it. No STEP export yet (slice 3).
 
-## Limitations (0.2.0-alpha.3)
+## Limitations (0.2.0-alpha.4)
 
 - The generator is static only (one correction plane); the solver API (`correctionTarget` in `src/statics.js`) takes
   a list of correction planes for two-plane later. The generated piece is not exported yet (slice 3). The orbiting
   load is a point mass; it is not in the couple.
 - The generator balances hub + orbiting load only; existing Counterweight bodies are not subtracted from its target
   (check mode adds them all up, so use one or the other).
-- The piece is voxel-shaped (cell size) with a lightly smoothed surface. Where it meets a concave boundary corner (a
-  bore, an inside corner) a surface edge can cut the corner by a fraction of a cell (the "facet-chord dip" shown;
-  ~0.16 mm at 1 mm cells on a real NX file); vertices themselves are always inside. Hub contact is judged within
-  2 × the mesh deflection.
+- The piece is voxel-shaped (cell size) with a lightly smoothed surface. It is kept inside the Boundary *mesh* by
+  at least the margin (the boundary's mesh deflection) and verified with the Check-containment test at the Check
+  tolerance; against the exact CAD surface it can still differ by up to the boundary's chordal deflection. If the
+  containment step cannot clear every crossing (8 passes), the result is reported as FAIL with the measured
+  protrusion, not hidden. Hub contact is judged within the hub deflection + 1.5 × margin (≤ 0.1 cell).
+- The residual ± U is a worst-case linear sum of the per-body mass-property ± (from tessellation / declared CAD
+  tolerance). With loose CAD tolerances U can be several g·mm, so a tight tolerance reads CAN'T RESOLVE: use a finer
+  import (accurate mode) or a looser tolerance. The generator's own leftover after the containment step can end
+  slightly above a very tight tolerance (shown; it then reads FAIL or CAN'T RESOLVE).
 - Mass is near-minimal for the voxel grid (greedy by lever arm + margin refinement), not a proven optimum.
 - Per-body meshing needs a file without assembly structure (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) whose
   solids map 1:1 onto meshes; otherwise the whole-file plan of 0.1.x is used. It adds a calibration probe and up to

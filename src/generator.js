@@ -1,4 +1,4 @@
-import { buildIndex, columnHeights, insideIntervals, segmentHit, classify, containment, nearSurface } from './contain.js';
+import { buildIndex, columnHeights, insideIntervals, segmentHit, classify, containment, nearSurface, nearestPoint, checkBody, containTol } from './contain.js';
 import { meshMoments, KGM3, meshCheck } from './mass.js';
 import { frame } from './imbalance.js';
 // Counterweight generator (0.2.0-alpha.3, static). Pure JS; runs in src/gen-worker.js and in Node tests.
@@ -18,7 +18,7 @@ import { frame } from './imbalance.js';
 //    the region (boundary, hub, band) is put back.
 // 6) Exact mass properties of the mesh; if the leftover after meshing is over tolerance, re-target the voxel step by
 //    the leftover and repeat (≤ maxIter). The best mesh is returned with the iteration count.
-export const GEN = { cellsAcross: 120, maxNodes: 2.5e6, smoothIter: 6, lambda: 0.5, mu: -0.53, maxIter: 8, maxMoves: 40000 };
+export const GEN = { cellsAcross: 120, maxNodes: 2.5e6, smoothIter: 6, lambda: 0.5, mu: -0.53, maxIter: 8, maxMoves: 40000, containPasses: 8 };
 const nice = x => { const e = 10 ** Math.floor(Math.log10(x)), f = x / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
 export const defaultCell = diag => Math.max(0.02, nice(diag / GEN.cellsAcross));
 export function toFrame(pos, fr) {
@@ -39,13 +39,14 @@ class Heap { // max-heap of [key, id]
   get size() { return this.k.length; }
 }
 
-export function generate({ boundary, hub, axis, band, target, rho, cell, tol, maxNodes = GEN.maxNodes, progress = () => { }, cancelled = () => false, maxIter = GEN.maxIter, smoothIter = GEN.smoothIter, contactTol = null }) {
+export function generate({ boundary, hub, axis, band, target, rho, cell, tol, maxNodes = GEN.maxNodes, progress = () => { }, cancelled = () => false, maxIter = GEN.maxIter, smoothIter = GEN.smoothIter, contactTol = null, margin = null, checkTol = null, containPasses = GEN.containPasses }) {
   const t0 = Date.now(), notes = [], chk = () => { if (cancelled()) throw Object.assign(new Error('cancelled'), { cancelled: true }); };
   if (!(rho > 0)) throw new Error('added material density must be positive');
   const Tm = Math.hypot(...target); if (!(Tm > 0)) throw new Error('nothing to balance: the target imbalance is zero');
   const fr = frame(axis.p, axis.d), B = toFrame(boundary.pos, fr), H = toFrame(hub.pos, fr);
   progress('Indexing boundary and hub', 0.02);
   const IB = buildIndex(B, boundary.idx), IH = buildIndex(H, hub.idx);
+  const bSign = Math.sign(meshMoments(B, boundary.idx).m) || 1;
   const w0 = Math.max(band[0], IB.lo[2]), w1 = Math.min(band[1], IB.hi[2]);
   if (!(w1 > w0)) throw new Error('the axial band does not overlap the boundary');
   // grid: nodes at lo + (i + 0.5) h, one padding node on each side
@@ -53,6 +54,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
   const dims = hh => { const nu = Math.max(1, Math.ceil((IB.hi[0] - IB.lo[0]) / hh)), nv = Math.max(1, Math.ceil((IB.hi[1] - IB.lo[1]) / hh)), nw = Math.max(1, Math.round((w1 - w0) / hh)); return [nu + 2, nv + 2, nw + 2]; };
   let [NU, NV, NW] = dims(h);
   if (NU * NV * NW > maxNodes) { const h0 = h; h *= Math.cbrt(NU * NV * NW / maxNodes); [NU, NV, NW] = dims(h); while (NU * NV * NW > maxNodes) { h *= 1.03; [NU, NV, NW] = dims(h); } notes.push(`cell size raised from ${h0} to ${+h.toPrecision(3)} mm by the cell-count guard (${(maxNodes / 1e6).toFixed(1)}M nodes)`); }
+  const mg = Math.min(0.25 * h, Math.max(margin > 0 ? margin : 0, 1e-6 * IB.diag, 1e-3 * h)); // inset from the boundary (M11)
   const hw = (w1 - w0) / (NW - 2), N = NU * NV * NW, at = (i, j, k) => i + NU * (j + NV * k);
   const U = i => IB.lo[0] + (i - 0.5) * h, Vv = j => IB.lo[1] + (j - 0.5) * h, W = k => w0 + (k - 0.5) * hw;
   const flag = new Uint8Array(N); // bit0 inside boundary, bit1 inside hub, bit2 inside band
@@ -132,7 +134,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
   function mesh() {
     const cubes = new Set();
     for (const n of selList) { const i = n % NU, j = ((n / NU) | 0) % NV, k = (n / (NU * NV)) | 0; for (let c = 0; c < 8; c++) { const x = i - (c & 1), y = j - ((c >> 1) & 1), z = k - ((c >> 2) & 1); if (x >= 0 && y >= 0 && z >= 0 && x < NU - 1 && y < NV - 1 && z < NW - 1) cubes.add(at(x, y, z)); } }
-    const vid = new Map(), pos = [], tags = [], idx = [];
+    const vid = new Map(), pos = [], tags = []; let idx = [];
     const V = (a, b) => { const key = a * N + b; let i = vid.get(key); if (i == null) { const e = edgeVert(a, b); i = pos.length / 3; pos.push(...e.p); tags.push(e.tag); vid.set(key, i); } return i; };
     const tri = (x, y, z, ins, outs) => {
       const p = i => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]], A = p(x), Bq = p(y), C = p(z);
@@ -153,7 +155,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
     // Taubin smoothing of free vertices
     const nv = pos.length / 3, nbr = Array.from({ length: nv }, () => new Set());
     for (let t = 0; t < idx.length; t += 3) for (let e = 0; e < 3; e++) { const a = idx[t + e], b = idx[t + (e + 1) % 3]; nbr[a].add(b); nbr[b].add(a); }
-    const orig = Float64Array.from(pos), cur = Float64Array.from(pos), tmp = new Float64Array(pos.length);
+    const orig = Float64Array.from(pos); let cur = Float64Array.from(pos); const tmp = new Float64Array(pos.length);
     const step = f => { tmp.set(cur); for (let i = 0; i < nv; i++) { if (tags[i] !== 'free' || !nbr[i].size) continue; for (let k = 0; k < 3; k++) { let s = 0; for (const m of nbr[i]) s += tmp[3 * m + k]; cur[3 * i + k] = tmp[3 * i + k] + f * (s / nbr[i].size - tmp[3 * i + k]); } } };
     for (let s = 0; s < smoothIter; s++) { step(GEN.lambda); step(GEN.mu); }
     let reverted = 0;
@@ -161,16 +163,86 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
       if (tags[i] !== 'free') continue; const x = [cur[3 * i], cur[3 * i + 1], cur[3 * i + 2]];
       if (x[2] < w0 || x[2] > w1 || classify(IB, x) === 'out' || classify(IH, x) === 'in') { cur[3 * i] = orig[3 * i]; cur[3 * i + 1] = orig[3 * i + 1]; cur[3 * i + 2] = orig[3 * i + 2]; reverted++; }
     }
-    let mom = meshMoments(cur, idx); if (mom.m < 0) { for (let t = 0; t < idx.length; t += 3) [idx[t + 1], idx[t + 2]] = [idx[t + 2], idx[t + 1]]; mom = meshMoments(cur, idx); }
-    return { posF: cur, idx, tags, reverted, Q: [mom.M1[0] * rho * KGM3, mom.M1[1] * rho * KGM3], vol: mom.m };
+    return finish({ posF: cur, idx, tags, reverted, inset: 0, split: 0 });
   }
-  let bestMesh = null, iter = 0;
+  const finish = m => { const { posF, idx } = m; let mom = meshMoments(posF, idx); if (mom.m < 0) { for (let t = 0; t < idx.length; t += 3) [idx[t + 1], idx[t + 2]] = [idx[t + 2], idx[t + 1]]; mom = meshMoments(posF, idx); }
+    return { ...m, Q: [mom.M1[0] * rho * KGM3, mom.M1[1] * rho * KGM3], vol: mom.m }; };
+  // M11: containment is part of the result. Vertices outside the boundary or within the margin of it are put on
+  // the boundary minus the margin; edges whose midpoint is outside, or that cross a boundary triangle, are split
+  // there (neighbours split consistently, so the mesh stays closed) and the new vertex is placed the same way.
+  const contained = m => { const tags = m.tags.slice(), en = enforce(m.posF, m.idx.slice(), tags); return finish({ ...m, posF: en.pos, idx: en.idx, tags, inset: en.moved, split: en.split }); };
+  const triIn = t => { const p = k => [IB.pos[3 * IB.idx[3 * t + k]], IB.pos[3 * IB.idx[3 * t + k] + 1], IB.pos[3 * IB.idx[3 * t + k] + 2]], a = p(0), b = p(1), c = p(2);
+    const n = [(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])], l = Math.hypot(...n) * bSign || 1;
+    return n.map(v => -v / l); };
+  // point on the boundary minus the margin nearest to x (or null: nothing near, or it would be inside the hub)
+  // Repeated, so a point near a re-entrant boundary edge (two faces) ends up the margin away from both.
+  const place = (x0, dm = mg) => {
+    let y = x0.slice();
+    for (let it = 0; it < 4; it++) {
+      const r = nearestPoint(IB, y, 3 * h + dm); if (!r) return it ? y : null;
+      const out = classify(IB, y) !== 'in'; if (!out && r.d >= dm * 0.999) break;
+      const d = [r.q[0] - y[0], r.q[1] - y[1], r.q[2] - y[2]], dl = Math.hypot(...d);
+      const n = dl > 1e-9 * h ? d.map(v => (out ? 1 : -1) * v / dl) : triIn(r.t); y = [0, 1, 2].map(k => r.q[k] + dm * n[k]);
+      y[2] = Math.min(w1, Math.max(w0, y[2]));
+    }
+    return classify(IH, y) === 'in' || classify(IB, y) !== 'in' ? null : y;
+  };
+  function enforce(pos, idx, tags) {
+    const P = Array.from(pos), ins = []; let I = idx, moved = 0, split = 0; // ins: per-vertex inset multiplier
+    const X = i => [P[3 * i], P[3 * i + 1], P[3 * i + 2]], key = (a, b) => a < b ? a * 4294967296 + b : b * 4294967296 + a;
+    for (let pass = 0; pass < containPasses; pass++) {
+      chk(); let changed = 0;
+      for (let i = 0; i < P.length / 3; i++) {
+        const x = X(i), out = classify(IB, x) !== 'in', dm = mg * (ins[i] || 1);
+        if (!out && (tags[i] === 'hub' && !ins[i] || !Number.isFinite(nearSurface(IB, x, dm * 0.999)))) continue;
+        const y = place(x, dm); if (y && (y[0] !== x[0] || y[1] !== x[1] || y[2] !== x[2])) { P[3 * i] = y[0]; P[3 * i + 1] = y[1]; P[3 * i + 2] = y[2]; moved++; changed++; }
+      }
+      const cr = containment(IB, Float64Array.from(P), I, { tol: 0.5 * mg, edgeList: true, maxEdgeTests: 8e6 }), cross = new Set();
+      // an edge that still crosses (a chord round a re-entrant boundary edge): its ends go further in (2×, 4×, … the
+      // margin, at most a quarter cell) on the next pass instead of being split again; once both are that deep it is split
+      for (let e = 0; e < cr.crossEdges.length; e += 2) {
+        const a = cr.crossEdges[e], b = cr.crossEdges[e + 1]; let deeper = 0;
+        if (pass) for (const v of [a, b]) if (mg * (ins[v] || 1) * 2 <= 0.25 * h) { ins[v] = (ins[v] || 1) * 2; deeper++; }
+        if (deeper) changed++; else cross.add(key(a, b));
+      }
+      const mid = new Map();
+      for (let t = 0; t < I.length; t += 3) for (let k = 0; k < 3; k++) {
+        const a = I[t + k], b = I[t + (k + 1) % 3], e = key(a, b); if (mid.has(e)) continue;
+        const m = [0, 1, 2].map(c => (P[3 * a + c] + P[3 * b + c]) / 2);
+        if (!cross.has(e) && (tags[a] === 'free' && tags[b] === 'free' || classify(IB, m) === 'in')) { mid.set(e, -1); continue; }
+        const y = place(m);
+        if (!y) { mid.set(e, -1); continue; }
+        mid.set(e, P.length / 3); P.push(y[0], y[1], y[2]); tags.push('bnd'); split++; changed++;
+      }
+      if ([...mid.values()].some(v => v >= 0)) {
+        const out = [];
+        for (let t = 0; t < I.length; t += 3) {
+          const v = [I[t], I[t + 1], I[t + 2]], m = [0, 1, 2].map(k => mid.get(key(v[k], v[(k + 1) % 3])) ?? -1), n = m.filter(x => x >= 0).length;
+          if (!n) { out.push(...v); continue; }
+          if (n === 3) { out.push(v[0], m[0], m[2], m[0], v[1], m[1], m[2], m[1], v[2], m[0], m[1], m[2]); continue; }
+          const r = n === 1 ? m.findIndex(x => x >= 0) : (m.findIndex(x => x < 0) + 1) % 3, a = v[r], b = v[(r + 1) % 3], c = v[(r + 2) % 3], m0 = m[r], m1 = m[(r + 1) % 3];
+          if (n === 1) out.push(a, m0, c, m0, b, c); else out.push(m0, b, m1, a, m0, m1, a, m1, c);
+        }
+        I = out;
+      }
+      if (!changed) break;
+    }
+    return { pos: Float64Array.from(P), idx: I, moved, split };
+  }
+  // Iterations mesh without the (costly) containment step and use the moment change it made last time (dQ) as the
+  // estimate; a candidate (estimate within tol, capped, or the last iteration) gets the containment step and its
+  // exact moments. Only contained candidates can be the result.
+  let bestMesh = null, iter = 0, dQ = [0, 0];
   for (iter = 1; iter <= maxIter; iter++) {
     chk(); progress(`Meshing (iteration ${iter})`, 0.5 + 0.45 * (iter - 1) / maxIter);
-    const m = mesh(), R = [target[0] - m.Q[0], target[1] - m.Q[1]]; m.R = R; m.iter = iter; m.cells = selList.size;
-    if (!bestMesh || Math.hypot(...R) < Math.hypot(...bestMesh.R)) bestMesh = m;
-    if (Math.hypot(...R) <= tol || capped) break;
-    Tv = [Tv[0] + R[0], Tv[1] + R[1]]; refine(); if (cancelled()) chk();
+    const raw = mesh(); let R = [target[0] - raw.Q[0] - dQ[0], target[1] - raw.Q[1] - dQ[1]];
+    if (Math.hypot(...R) <= tol || capped || iter === maxIter) {
+      progress(`Keeping the piece inside the Boundary (iteration ${iter})`, 0.5 + 0.45 * (iter - 0.5) / maxIter);
+      const m = contained(raw); dQ = [m.Q[0] - raw.Q[0], m.Q[1] - raw.Q[1]]; R = [target[0] - m.Q[0], target[1] - m.Q[1]]; m.R = R; m.iter = iter; m.cells = selList.size;
+      if (!bestMesh || Math.hypot(...R) < Math.hypot(...bestMesh.R)) bestMesh = m;
+      if (Math.hypot(...R) <= tol || capped) break;
+    }
+    if (iter < maxIter) { Tv = [Tv[0] + R[0], Tv[1] + R[1]]; refine(); if (cancelled()) chk(); }
   }
   const m = bestMesh, world = fromFrame(m.posF, fr), idx = Uint32Array.from(m.idx);
   // checks: one piece, closed / manifold, containment, hub contact
@@ -178,22 +250,24 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
   for (let t = 0; t < idx.length; t += 3) { const a = root(idx[t]); par[root(idx[t + 1])] = a; par[root(idx[t + 2])] = a; }
   const comps = new Set(); for (let i = 0; i < par.length; i++) comps.add(root(i));
   const closed = meshCheck(world, idx, m.vol), ctol = Math.max(1e-6 * IB.diag, 1e-6);
-  const inB = containment(IB, m.posF, idx, { tol: Math.max(ctol, 1e-3 * h), maxEdgeTests: 4e6, cancelled }), inH = containment(IH, m.posF, idx, { tol: Math.max(ctol, 1e-3 * h), maxEdgeTests: 0, strict: true });
-  // hub contact: surface vertices within contactTol of the hub surface (the piece may meet the hub where the hub
-  // surface coincides with the boundary, e.g. a bore); otherwise the gap. Edge chords between surface vertices can
-  // dip outside a concave boundary (or into a convex hub) by the facet sag: measured at edge midpoints.
+  // M11: verification with THE Check-containment function (contain.js checkBody, edge-crossing test included) in
+  // world coordinates at the Check tolerance; maxOut is measured. Hub overlap: strict (touching is not overlap).
+  progress('Checking containment', 0.96);
+  const Bw = buildIndex(boundary.pos, boundary.idx), Hw = buildIndex(hub.pos, hub.idx), cTol = checkTol > 0 ? checkTol : containTol(Bw.diag, []);
+  const ver = checkBody(Bw, Hw, world, idx, cTol, { cancelled });
+  // L14: hub contact = vertices on the hub mesh surface within contactTol (the mesh deflection or a small fraction of
+  // the cell); the measured minimum vertex–hub distance is reported too.
   const ctH = contactTol > 0 ? contactTol : Math.max(ctol, 1e-3 * h); let hubContact = 0, hubGap = 1 / 0;
-  progress('Checking the result', 0.97);
+  progress('Checking the result', 0.98);
   for (let i = 0; i < m.tags.length; i++) { if (m.tags[i] === 'free') continue; const x = [m.posF[3 * i], m.posF[3 * i + 1], m.posF[3 * i + 2]], d = nearSurface(IH, x, 2 * h); if (d <= ctH) hubContact++; if (d < hubGap) hubGap = d; }
-  let dipB = 0, dipH = 0; const seenE = new Set();
+  let dipH = 0; const seenE = new Set();
   for (let t = 0; t < idx.length; t += 3) for (let k = 0; k < 3; k++) {
     const a = idx[t + k], b = idx[t + (k + 1) % 3]; if (m.tags[a] === 'free' && m.tags[b] === 'free') continue; const key = a < b ? a * 4294967296 + b : b * 4294967296 + a; if (seenE.has(key)) continue; seenE.add(key);
     const x = [0, 1, 2].map(c => (m.posF[3 * a + c] + m.posF[3 * b + c]) / 2);
-    if (classify(IB, x) === 'out') { const d = nearSurface(IB, x, h); if (Number.isFinite(d)) dipB = Math.max(dipB, d); }
     if (classify(IH, x) === 'in') { const d = nearSurface(IH, x, h); if (Number.isFinite(d)) dipH = Math.max(dipH, d); }
   }
   let bandOut = 0; for (let i = 2; i < m.posF.length; i += 3) if (m.posF[i] < w0 - 1e-9 || m.posF[i] > w1 + 1e-9) bandOut++;
   return { pos: world, idx, frame: { o: fr.o, R: fr.R }, cell: h, cellW: hw, grid: [NU, NV, NW], allowed: nAllowed, cells: m.cells, iterations: m.iter, residual: m.R, achieved: m.Q, target, tol,
-    volume: m.vol, mass: m.vol * rho * KGM3, components: comps.size, open: closed.open, hubVertices: hubContact, hubGap: hubContact ? 0 : Number.isFinite(hubGap) ? hubGap : null, contactTol: ctH, dipBoundary: dipB, dipHub: dipH, reverted: m.reverted,
-    outsideBoundary: inB.nOut, crossBoundary: inB.crossSkipped ? null : inB.crossings, insideHub: inH.n - inH.nOut, outsideBand: bandOut, band: [w0, w1], capped, notes, ms: Date.now() - t0 };
+    volume: m.vol, mass: m.vol * rho * KGM3, components: comps.size, open: closed.open, hubVertices: hubContact, hubGap: Number.isFinite(hubGap) ? hubGap : null, contactTol: ctH, dipBoundary: ver.maxOut, maxOut: ver.maxOut, dipHub: dipH, reverted: m.reverted, inset: m.inset, split: m.split, margin: mg, checkTol: cTol, contained: ver.inside && !ver.crossSkipped, outPts: ver.outPts,
+    outsideBoundary: ver.nOut, crossBoundary: ver.crossSkipped ? null : ver.crossings, insideHub: ver.hubOverlap.nIn, outsideBand: bandOut, band: [w0, w1], capped, notes, ms: Date.now() - t0 };
 }

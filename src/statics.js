@@ -89,7 +89,16 @@ export function isoReadout(Umag, M, rpm) {
 // ---------- check mode (existing counterweight) ----------
 export const CHECK = { matched: 0.02, angleDeg: 5 }; // |ratio − 1| below this reads "matched"; perpendicular error flag
 // base: hub + orbiting load U (g·mm); cw: existing counterweight U; tol: { kind: 'gmm' | 'G', value }, M rotor mass (g).
-export function checkBalance({ base, cw, M, rpm, tol, pinAng = null }) {
+// 0.2.0-alpha.4 (M10): uncertainty of a body's static moment |U| = m·r from its mass-property ± (relative volume dV,
+// CG dc mm): |m|·dc + |U|·dV (worst case). Summed over the bodies (and the orbiting load) it bounds the residual error.
+export const momentUnc = (m, Umag, unc) => unc ? Math.abs(m) * (unc.dc || 0) + Math.abs(Umag) * (unc.dV || 0) : 0;
+// Verdict with the input uncertainty U (g·mm): PASS only if |R| + U ≤ tol, FAIL if |R| − U > tol, else 'unresolved'
+// (the tolerance is finer than what the inputs can resolve).
+export function verdictU(R, U, limit) {
+  if (limit == null || !Number.isFinite(limit)) return null; const e = limit * 1e-12 + 1e-15;
+  return R + U <= limit + e ? 'pass' : R - U > limit + e ? 'fail' : 'unresolved';
+}
+export function checkBalance({ base, cw, M, rpm, tol, pinAng = null, unc = 0 }) {
   const B = vec(base), C = vec(cw || [0, 0]), R = vec([base[0] + (cw?.[0] || 0), base[1] + (cw?.[1] || 0)]);
   const pct = B.mag > 0 ? 1 - R.mag / B.mag : null;
   const bh = B.mag > 0 ? base.map(x => x / B.mag) : null;
@@ -100,9 +109,9 @@ export function checkBalance({ base, cw, M, rpm, tol, pinAng = null }) {
   let limit = null;
   if (tol?.kind === 'gmm' && tol.value >= 0) limit = tol.value;
   else if (tol?.kind === 'G' && tol.value > 0 && rpm > 0 && M > 0) limit = permissibleU(tol.value, M, rpm);
-  const pass = limit == null ? null : R.mag <= limit * (1 + 1e-12);
+  const verdict = verdictU(R.mag, unc, limit), pass = verdict == null ? null : verdict === 'pass';
   const state = ratio == null ? null : Math.abs(ratio - 1) <= CHECK.matched ? 'matched' : ratio > 1 ? 'over' : 'under';
-  return { base: B, cw: C, resid: R, pct, ratio, perp, angErr, angFlag: angErr != null && Math.abs(angErr) > CHECK.angleDeg, state, iso, limit, pass,
+  return { base: B, cw: C, resid: R, pct, ratio, perp, angErr, angFlag: angErr != null && Math.abs(angErr) > CHECK.angleDeg, state, iso, limit, pass, verdict, unc,
     cwRelPin: pinAng != null && C.mag > 0 ? wrap180(C.ang - pinAng) : null };
 }
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.2.0-alpha.4 — 2026-11-24 (alpha)
+
+Fix build for the alpha.3 gate (NO-GO: M10, M11, L12–L15). The STL / faceted-STEP export moves to 0.2.0-alpha.5.
+- **M10 — residual uncertainty.** The hub, orbiting-load and counterweight mass-property ± are propagated into a
+  residual ± U (worst case: |m|·δc + |U|·δV per body; the generated piece's own mesh is exact). Verdict, in check mode
+  and for the generated piece alike: **PASS** only if |R| + U ≤ tol, **FAIL** if |R| − U > tol, otherwise
+  **CAN'T RESOLVE** ("residual X ± U g·mm exceeds tolerance resolution", with a finer-mesh / looser-tolerance hint and
+  the smallest tolerance that would resolve it). The residual is shown as "X ± U" everywhere; the generator's
+  default-tolerance line warns when the tolerance is below the uncertainty. (On a real NX file with a 0.020 mm CG ±
+  the default 0.2 % tolerance now reads CAN'T RESOLVE instead of a false PASS.)
+- **M11 — containment is part of the generator.** After smoothing, vertices outside the Boundary or within the
+  margin (= the boundary mesh deflection) are put on the boundary minus the margin; edges whose midpoint is outside
+  or that cross a boundary triangle are split there (mesh stays closed), ends of chords that still cross go further
+  in (2×, 4×… the margin, ≤ ¼ cell), repeated up to 8 passes. The result is then verified with **the same function
+  as Check containment** (`checkBody` in `src/contain.js`, edge-crossing test included) in world coordinates at the
+  Check tolerance, with a measured max protrusion (every vertex, samples along near-surface and crossing edges). If
+  it still fails, the result is **FAIL** with the count, crossings and max protrusion, and the outside points are
+  marked red in 3-D; a containment failure blocks PASS in check mode too. Generator readout and Check containment
+  now agree.
+- **L12** — the session's assembly CG is schema-checked (bad centre / mass / body list → "invalid assembly CG
+  ignored", never throws); session restore is atomic: the new state is built on copies first, then committed, and a
+  failing commit rolls back to the previous state.
+- **L13** — a piece restored from a session is re-verified in the worker (containment and hub contact with the same
+  functions; verdict and tolerance recomputed from the current inputs); the stored summary is not trusted.
+- **L14** — hub contact is judged within the hub mesh deflection + 1.5 × the margin (capped at 0.1 cell), not 0.5 mm;
+  the measured closest distance is shown.
+- **L15** — the worker also builds the view buffers (Float32 positions, normals) and the piece's mass properties and
+  transfers them; the view adds / removes just that body; the DOM refresh is deferred a frame. Long Tasks observer in
+  the smoke: no task ≥ 50 ms of app work during generate, render, restore or re-verify (render loop paused, as
+  SwiftShader frames are ~50 ms each in headless Chromium).
+- **Performance** (needed for M11 on large CAD meshes): a 3-D triangle grid for nearest-point / segment / edge
+  crossing queries, projection grids that grow with the mesh, a scalar ray-parity loop, and the containment step run
+  only on candidate meshes. On a 62k-triangle NX boundary: default case 1.8 s, pin case 5.3 s in Chromium.
+- Tests: 88 Node tests (86 pass, 2 optional OCP checks skipped), new `test/fixes020a4.test.mjs` (9): M10 verdicts and
+  check mode, M11 pin and defaults cases on a star-shaped (re-entrant) Boundary checked independently with the Check
+  function, M11 without enforcement reported as not contained (readout == Check), L14, L13 (moved / scaled mesh
+  caught, stored summary cleaned), L12 (incl. the malicious fixture), L15 view buffers, 3-D grid queries vs brute
+  force. New `tools/ui-smoke-020a4.cjs` (18 checks): ± U, CAN'T RESOLVE / FAIL / PASS around the tolerance,
+  generator vs Check containment agreement, hub contact, a tampered session piece → outside / FAIL / red marks /
+  check-mode PASS blocked, invalid assembly CG, malicious fixture, long tasks. ui-smoke-020/020a2/021 pass unchanged.
+
 ## 0.2.0-alpha.3 — 2026-11-24 (alpha)
 
 Slice 2: the counterweight generator and the axial band. Static balance only; no export of the piece yet (slice 3).
@@ -34,13 +75,14 @@ Slice 2: the counterweight generator and the axial band. Static balance only; no
   match `Generated CW [n]` and its material a preset id. Anything else is dropped and counted in a session card (a bad
   mesh becomes "regenerate"). All data text in the readout is escaped; the worker loads from 'self' and no inline
   scripts or styles are added, so the alpha.2 CSP is unchanged.
-- Tests: 81 Node tests (79 pass, 2 optional OCP checks skipped), new: synthetic hub + boundary ring (leftover under
+- Tests: 79 Node tests (77 pass, 2 optional OCP checks skipped; corrected in alpha.4 — this entry said 81), new: synthetic hub + boundary ring (leftover under
   tolerance, one closed piece touching the hub, inside boundary and band, opposite the needed angle, mass within 15 %
   of the lightest annular sector), tilted axis + typed band, Cancel and error cases, cell guard, column / segment
   helpers, band modes and session round trip, generated-mesh session packing and default tolerance, schema checks on every generator session field (incl. the
   malicious-session fixture, which now also carries generator payloads); `tools/ui-smoke-021.cjs` (Playwright, 24
-  checks) and one more check in `tools/ui-smoke-020a2.cjs` (now 19: the malicious generator fields are rejected and
-  shown as text, no script runs, no CSP violation).
+  checks) and one more check in `tools/ui-smoke-020a2.cjs` (19 checks, of which 18 passed at alpha.3: the malicious-session
+  assembly-CG case failed — L12, fixed in alpha.4; the malicious generator fields are rejected and shown as text, no
+  script runs, no CSP violation).
 
 ## 0.2.0-alpha.2 — 2026-11-24 (alpha)
 

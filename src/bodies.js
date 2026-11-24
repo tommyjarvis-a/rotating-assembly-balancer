@@ -202,7 +202,12 @@ export function restoreSession(session, current) {
   }
   const roleNotes = normalizeRoles(current); if (rejected) roleNotes.push(`${rejected} invalid body field${rejected > 1 ? 's' : ''} ignored`);
   const j = session.assemblyCG;
-  if (!j || !finiteVec(j.c) || !(typeof j.mass === 'number' && Number.isFinite(j.mass) || j.mass == null)) return { densMatch, roleNotes, sels: [], cg: null, exported: undefined };
+  // L12: an assembly CG that fails the schema (c not 3 finite numbers, mass not a finite number or null, bodies not an
+  // array) is rejected as a whole with a note; restore never throws on it
+  if (j != null && (typeof j !== 'object' || !finiteVec(j.c) || !(typeof j.mass === 'number' && Number.isFinite(j.mass) || j.mass == null) || (j.bodies != null && !Array.isArray(j.bodies)))) {
+    roleNotes.push('invalid assembly CG ignored'); return { densMatch, roleNotes, sels: [], cg: null, cgRejected: true, exported: undefined };
+  }
+  if (!j) return { densMatch, roleNotes, sels: [], cg: null, exported: undefined };
   const cgMatch = matchBodies((j.bodies || []).map(asSaved), current);
   const rest = restoreCG(cgMatch, j, { saved: Array.isArray(session.bodies) ? session.bodies.length : undefined, current: current.length, sessionStale: densMatch.stale, sessionNotice: densMatch.notice });
   const sels = rest.sels, key = cgKey(sels, current), names = sels.map(i => current[i].name);
