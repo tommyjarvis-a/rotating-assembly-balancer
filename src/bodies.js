@@ -1,3 +1,4 @@
+import { cleanBody, finiteVec } from './session-schema.js';
 import { meshMoments, richardson, derive, scale, meshCheck } from './mass.js';
 import { normalizeRoles } from './roles.js';
 // Turn occt-import-js results (one per tessellation pass, finest last) into body records.
@@ -48,6 +49,15 @@ export function buildEntries(entries, dens, defRho, fileName = '', opts = {}) {
 
 // L7: give duplicate display names a stable suffix (#1, #2, …), including the first copy.
 // Unique names are left as they are, unless they collide with a name already in `existing`.
+// L9: a file that declares a loose modelling uncertainty δ (mm) has CAD edge-tolerance gaps that change volume and CG
+// at any mesh size (NX test file, δ = 0.1 mm: up to 9e-4 relative volume and 16 µm CG on a small body vs OCP B-rep).
+// The per-body ± is floored empirically at rel·δ (relative volume, per mm of δ) and cg·δ (CG), and marked "≥".
+export const CAD_FLOOR = { minTol: 0.01, rel: 0.01, cg: 0.2 };
+export function applyCadFloor(bodies, fu) {
+  if (!(fu >= CAD_FLOOR.minTol)) return bodies;
+  for (const b of bodies) { const u = b.unc || { dV: 0, dc: 0 }; b.unc = { ...u, dV: Math.max(u.dV, CAD_FLOOR.rel * fu), dc: Math.max(u.dc, CAD_FLOOR.cg * fu), low: true, cad: fu }; }
+  return bodies;
+}
 export function uniqueNames(incoming, existing = []) {
   const taken = new Set(existing.map(b => b.name)), nIn = new Map();
   for (const b of incoming) nIn.set(b.name, (nIn.get(b.name) || 0) + 1);
@@ -181,19 +191,18 @@ export function exportAssemblyCG(cg, bodies, sels = []) {
 // Apply saved densities / on flags and restore the assembly CG onto `current` (mutated in place).
 // Then apply holdStale as load-completion would, so a stale restore cannot become current.
 export function restoreSession(session, current) {
-  const densMatch = matchBodies(session.bodies || [], current);
+  const densMatch = matchBodies(Array.isArray(session.bodies) ? session.bodies : [], current); let rejected = 0;
   for (let si = 0; si < densMatch.map.length; si++) {
     const ci = densMatch.map[si], b = (session.bodies || [])[si];
     if (ci >= 0 && b) {
-      Object.assign(current[ci], { rho: b.rho, src: b.src, on: b.on });
-      // 0.2.0: role and material (older sessions have neither: role stays '' and the material follows rho)
-      if (typeof b.role === 'string') current[ci].role = b.role;
-      if (typeof b.mat === 'string') current[ci].mat = b.mat;
+      // H4: only schema-valid fields are applied (src/session-schema.js); 0.2.0 role and material are optional
+      const { o, bad } = cleanBody(b); rejected += bad;
+      Object.assign(current[ci], o);
     }
   }
-  const roleNotes = normalizeRoles(current);
+  const roleNotes = normalizeRoles(current); if (rejected) roleNotes.push(`${rejected} invalid body field${rejected > 1 ? 's' : ''} ignored`);
   const j = session.assemblyCG;
-  if (!j || !Array.isArray(j.c)) return { densMatch, roleNotes, sels: [], cg: null, exported: undefined };
+  if (!j || !finiteVec(j.c) || !(typeof j.mass === 'number' && Number.isFinite(j.mass) || j.mass == null)) return { densMatch, roleNotes, sels: [], cg: null, exported: undefined };
   const cgMatch = matchBodies((j.bodies || []).map(asSaved), current);
   const rest = restoreCG(cgMatch, j, { saved: Array.isArray(session.bodies) ? session.bodies.length : undefined, current: current.length, sessionStale: densMatch.stale, sessionNotice: densMatch.notice });
   const sels = rest.sels, key = cgKey(sels, current), names = sels.map(i => current[i].name);

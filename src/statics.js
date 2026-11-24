@@ -52,6 +52,13 @@ export function pinTyped(e, ang) {
   if (!(Number.isFinite(e) && e >= 0) || !Number.isFinite(ang)) return { error: 'pin e must be ≥ 0 mm and the angle a number' };
   return { e, ang: ((ang % 360) + 360) % 360, src: 'typed', tiltDeg: 0, projected: false };
 }
+// M8: move a picked pin (geometry { p, d, r }) to orbit radius e and angle ang (deg) about the spin axis, keeping its
+// axial position; its direction is turned with it about the axis, so the tilt is kept. Returns a picked pin again.
+export function movePin(pin, axis, e, ang) {
+  const cur = pinFromAxis(pin, axis), { w } = basis(axis), t = (ang - cur.ang) * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  const rot = v => { const k = dot(w, v), x = cross(w, v); return [0, 1, 2].map(i => v[i] * c + x[i] * s + w[i] * k * (1 - c)); };
+  return { src: 'pick', p: pinPoint({ e, ang }, axis, cur.z), d: rot(pin.d), r: pin.r ?? null };
+}
 // World point of the pin axis at axial position z (for drawing).
 export function pinPoint(pin, axis, z = pin.z ?? 0) {
   const { u, v, w } = basis(axis), [x, y] = polar(pin.e, pin.ang);

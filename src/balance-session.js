@@ -15,7 +15,7 @@ export function restoreBalance(j, bodies) {
   const out = BALANCE_DEFAULT(), notes = []; if (!j || typeof j !== 'object') return { bal: out, notes };
   out.added = normalizeAdded(j.added);
   const p = j.pin;
-  if (p?.src === 'pick' && Array.isArray(p.p) && Array.isArray(p.d) && [...p.p, ...p.d].every(Number.isFinite)) out.pin = { src: 'pick', p: p.p, d: p.d, r: p.r ?? null };
+  if (p?.src === 'pick' && Array.isArray(p.p) && Array.isArray(p.d) && [...p.p, ...p.d].every(Number.isFinite)) out.pin = { src: 'pick', p: p.p.slice(0, 3), d: p.d.slice(0, 3), r: Number.isFinite(p.r) ? p.r : null };
   else if (p?.src === 'typed') { const t = pinTyped(+p.e, +p.ang); if (!t.error) out.pin = t; else notes.push('saved pin ignored (' + t.error + ')'); }
   const L = j.load;
   if (L?.kind === 'mass' && +L.mass > 0) out.load = { kind: 'mass', body: -1, mass: +L.mass };

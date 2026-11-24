@@ -8,11 +8,12 @@ import { toStep } from './step-export.js';
 import { createView } from './view.js';
 import { ROLES, roleOf, setRole, roleIndex, inResiduals, normalizeRoles } from './roles.js';
 import { MATERIALS, CUSTOM, materialId, materialName, applyMaterial, addedMaterial, gcc, validRho } from './materials.js';
-import { staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
+import { movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
 import { faceTris, fitCylinderTris, fitPlane } from './fit.js';
 import { BALANCE_DEFAULT, exportBalance, restoreBalance } from './balance-session.js';
+import { cleanTool } from './session-schema.js';
 
-const VERSION = '0.2.0-alpha.1', $ = s => document.querySelector(s);
+const VERSION = '0.2.0-alpha.2', $ = s => document.querySelector(s);
 // Without WebGL (blocked, no GPU and no software fallback) everything but the 3-D view still works.
 let view; try { view = createView($('#view')); } catch (e) {
   view = new Proxy({}, { get: () => () => null }); queueMicrotask(() => card('err', `<b>3-D view unavailable</b>: WebGL could not start (${esc(e.message)}). Mass properties, balancing and export still work; enable hardware acceleration in the browser settings for the view.`));
@@ -136,14 +137,14 @@ function update() {
 }
 
 // ---------- UI ----------
-const srcText = b => `${b.sign < 0 ? 'removal (−m) · ' : ''}${b.src}${b.material ? ' · ' + esc(b.material) : ''} · V ${fmt(b.vol.m)} mm³${b.unc ? ` · ${b.unc.low ? '≥' : b.unc.rough ? '~' : ''}±${fmt(b.unc.dc * 1000, 2)} µm CoM` : ''}${b.mesh?.coarsened ? ' · coarsened mesh' : ''}`;
+const srcText = b => `${b.sign < 0 ? 'removal (−m) · ' : ''}${esc(b.src)}${b.material ? ' · ' + esc(b.material) : ''} · V ${fmt(b.vol.m)} mm³${b.unc ? ` · ${b.unc.low ? '≥' : b.unc.rough ? '~' : ''}±${fmt(b.unc.dc * 1000, 2)} µm CoM` : ''}${b.mesh?.coarsened ? ' · coarsened mesh' : ''}`;
 const roleBadge = b => { const r = ROLES.find(x => x.id === roleOf(b)); return r?.short ? ` <span class="rb ${r.id}" title="${r.title}">${r.short}</span>` : ''; };
 const roleSel = (b, i) => `<select data-role="${i}" title="Balance role">${ROLES.map(r => `<option value="${r.id}" ${roleOf(b) === r.id ? 'selected' : ''} title="${r.title}">${r.label}</option>`).join('')}</select>`;
 const matSel = (b, i) => { const id = b.mat ?? materialId(b.rho); return `<select data-mat="${i}" title="Material preset (sets the density)">${MATERIALS.map(m => `<option value="${m.id}" ${id === m.id ? 'selected' : ''}>${m.name}</option>`).join('')}<option value="${CUSTOM}" ${id === CUSTOM ? 'selected' : ''}>Custom${id === CUSTOM ? ' ' + +gcc(b.rho).toPrecision(5) : ''}</option></select>`; };
 function renderBodies() {
   $('#bodies tbody').innerHTML = st.bodies.map((b, i) => `<tr data-row="${i}" class="${st.sels.includes(i) ? 'sel' : ''}${roleOf(b) ? ' role-' + roleOf(b) : ''}"><td><input type="checkbox" data-on="${i}" ${b.on ? 'checked' : ''}></td>
     <td>${esc(b.name)}${b.unreliable ? ` <span class="bad" title="${b.open} open/non-manifold edges (${pct(b.frac)} of edges), volume closure error ${fmt(b.eps, 2)}: mesh not closed, mass properties unreliable">⚠</span>` : b.open ? ` <span class="note" title="${b.open} open/non-manifold edges (${pct(b.frac)} of edges) but the mesh closes (volume closure error ${fmt(b.eps, 2)} ≤ 1e-4): mass properties OK">ⓘ</span>` : ''}${roleBadge(b)}<div class="src" data-src="${i}">${srcText(b)}</div></td>
-    <td>${roleSel(b, i)}</td><td>${matSel(b, i)}</td><td><input type="number" step="any" data-rho="${i}" value="${b.rho}"></td><td data-mass="${i}">${roleOf(b) === 'boundary' ? '<span class="hint" title="Boundary: a region, not material">region</span>' : fmt(bmass(b))}</td></tr>`).join('');
+    <td class="rm">${roleSel(b, i)}${matSel(b, i)}</td><td><input type="number" step="any" data-rho="${i}" value="${esc(b.rho)}"></td><td data-mass="${i}">${roleOf(b) === 'boundary' ? '<span class="hint" title="Boundary: a region, not material">region</span>' : fmt(bmass(b))}</td></tr>`).join('');
   view.setRoles(st.bodies.map(roleOf)); renderNX();
 }
 function renderAxis() {
@@ -199,13 +200,13 @@ document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (
 const LABEL = { h: 'h', x: 'x', y: 'y', z: 'z', rx: 'rx°', ry: 'ry°', rz: 'rz°', rho: 'ρ', r: 'r', ri: 'ri', ro: 'ro', a0: 'a0°', sweep: 'sw°', sc: 'scale' };
 function renderTools() {
   $('#tools').innerHTML = st.tools.map((t, i) => `<div class="tool" data-i="${i}">
-    <div class="row"><input data-k="name" value="${esc(t.name)}" size="10"> <b>${t.kind}</b>
+    <div class="row"><input data-k="name" value="${esc(t.name)}" size="10"> <b>${esc(t.kind)}</b>
       <select data-k="role"><option ${t.role === 'counterweight' ? 'selected' : ''}>counterweight</option><option ${t.role === 'swinglink' ? 'selected' : ''}>swinglink</option></select>
       <select data-k="sign"><option value="1" ${t.sign > 0 ? 'selected' : ''}>add</option><option value="-1" ${t.sign < 0 ? 'selected' : ''}>remove</option></select>
       <button data-del="${i}" title="Remove tool">✕</button>${valid(t) ? '' : ' <span class="bad">invalid</span>'}</div>
     <div class="grid">${[...PARAMS[t.kind], ...COMMON_PARAMS].map(k => `<label class="${t.free?.[k] ? 'f' : ''}"><span>${LABEL[k]}</span><input type="number" step="any" data-k="${k}" value="${+(+t[k]).toPrecision(8)}">
-      <input type="checkbox" title="free for optimiser" data-free="${k}" ${t.free?.[k] ? 'checked' : ''}>${t.free?.[k] ? `<span class="free"><input type="number" step="any" data-lo="${k}" value="${t.free[k][0]}"><input type="number" step="any" data-hi="${k}" value="${t.free[k][1]}"></span>` : ''}</label>`).join('')}</div>
-    ${t.kind === 'prism' ? `<textarea data-k="pts" title="x,y; x,y; … (mm, local)">${t.pts.map(p => p.join(',')).join('; ')}</textarea>` : ''}
+      <input type="checkbox" title="free for optimiser" data-free="${k}" ${t.free?.[k] ? 'checked' : ''}>${t.free?.[k] ? `<span class="free"><input type="number" step="any" data-lo="${k}" value="${esc(t.free[k][0])}"><input type="number" step="any" data-hi="${k}" value="${esc(t.free[k][1])}"></span>` : ''}</label>`).join('')}</div>
+    ${t.kind === 'prism' ? `<textarea data-k="pts" title="x,y; x,y; … (mm, local)">${esc(t.pts.map(p => p.join(',')).join('; '))}</textarea>` : ''}
     <div class="src">mass ${valid(t) ? fmt(toolMoments(t).m) : '—'} g</div></div>`).join('');
 }
 const pct = f => (100 * f).toPrecision(2) + ' %';
@@ -232,7 +233,12 @@ $('#panel').addEventListener('change', e => {
   if (el.dataset.mat != null) { const i = +el.dataset.mat, b = st.bodies[i]; if (el.value === CUSTOM) { b.mat = CUSTOM; b.src = 'user'; status(`${b.name}: custom density — type it in ρ (kg/m³)`); } else applyMaterial(b, el.value); renderBodies(); renderBalanceInputs(); return update(); }
   if (el.id === 'added') { st.bal.added = el.value === CUSTOM ? { mode: CUSTOM, rho: validRho(+$('#addedrho').value) ? +$('#addedrho').value : null } : { mode: el.value, rho: null }; renderBalanceInputs(); return update(); }
   if (el.id === 'addedrho') { st.bal.added = { mode: CUSTOM, rho: validRho(+el.value) ? +el.value : null }; return update(); }
-  if (el.id === 'pine' || el.id === 'pinang') { const cur = pinNow(); const e = $('#pine').value.trim() === '' ? cur?.e ?? NaN : +$('#pine').value, a = $('#pinang').value.trim() === '' ? cur?.ang ?? 0 : +$('#pinang').value; const t = pinTyped(e, a); if (t.error) return pinmsg(t.error, true); setPin(t, 'typed pin e / angle'); return; }
+  if (el.id === 'pine' || el.id === 'pinang') {
+    const cur = pinNow(); const e = $('#pine').value.trim() === '' ? cur?.e ?? NaN : +$('#pine').value, a = $('#pinang').value.trim() === '' ? cur?.ang ?? 0 : +$('#pinang').value; const t = pinTyped(e, a); if (t.error) return pinmsg(t.error, true);
+    // M8: a picked pin stays geometry — moved to the typed e / angle about the spin axis (unchanged values keep the current e / angle)
+    if (st.bal.pin?.src === 'pick') { const ue = Math.abs(e - cur.e) < 1e-9 * Math.max(1, cur.e) ? cur.e : e, ua = Math.abs(a - cur.ang) < 1e-9 ? cur.ang : a; setPin(movePin(st.bal.pin, st.axis, ue, ua), 'picked pin moved about the spin axis'); return; }
+    setPin(t, 'typed pin e / angle'); return;
+  }
   if (el.id === 'load') { const v = el.value; st.bal.load = v === 'none' ? { kind: 'none', body: -1, mass: null } : v === 'mass' ? { kind: 'mass', body: -1, mass: +$('#loadmass').value > 0 ? +$('#loadmass').value : null } : { kind: 'body', body: +v.slice(1), mass: null }; renderBalanceInputs(); return update(); }
   if (el.id === 'loadmass') { st.bal.load = { kind: 'mass', body: -1, mass: +el.value > 0 ? +el.value : null }; return update(); }
   if (el.id === 'rpm') { st.bal.rpm = +el.value > 0 ? +el.value : null; return update(); }
@@ -267,7 +273,7 @@ $('#panel').addEventListener('click', e => {
   if (el.id === 'ccancel') cjob?.cancel();
   if (el.id === 'contain') runContain();
   if (el.id === 'copytable') copyNX();
-  if (el.id === 'pinclear') { st.bal.pin = null; pinmsg(''); renderBalanceInputs(); update(); }
+  if (el.id === 'pinclear') { st.bal.pin = null; st.pinNote = ''; pinmsg(''); renderBalanceInputs(); update(); }
   if (el.id === 'ptcg') { const r = assemblyCG(st.bodies, st.sels); if (r.error) axmsg(r.error === 'none' ? 'select one or more bodies first, then snap the point to their CG' : 'net mass of the selection is not positive', true); else setAxis({ p: r.c, d: st.axis.d }, 'C', `axis point = CG of ${r.n} selected bod${r.n === 1 ? 'y' : 'ies'}; direction kept`); }
 });
 
@@ -333,12 +339,19 @@ function renderCG() {
 const pinmsg = (m, bad) => { $('#pinmsg').textContent = m; $('#pinmsg').className = 'hint' + (bad ? ' bad' : ''); };
 // The pin in the current axis frame: a picked pin keeps its world axis, so e / angle follow axis edits.
 const pinNow = () => { const p = st.bal.pin; if (!p) return null; return p.src === 'pick' ? { ...pinFromAxis({ p: p.p, d: p.d, r: p.r }, st.axis), d: p.d } : p; };
-function setPin(pin, msg) {
-  st.bal.pin = pin; const now = pinNow();
-  pinmsg(`${msg} → e ${fmt(now.e, 4)} mm, ∠ ${fmt(now.ang, 2)}°${now.warn ? ' — ⚠ ' + now.warn : ''}`, !!now.warn);
-  renderBalanceInputs(); update();
+function setPin(pin, msg) { st.pinNote = msg; st.bal.pin = pin; renderBalanceInputs(); update(); }
+// M8: pin boxes and message are refreshed on every update, so a picked pin's e / angle follow axis changes
+function renderPin() {
+  const pin = pinNow(), act = document.activeElement?.id;
+  if (act !== 'pine') $('#pine').value = pin ? +pin.e.toPrecision(8) : ''; if (act !== 'pinang') $('#pinang').value = pin ? +pin.ang.toPrecision(8) : '';
+  if (!pin) { if ($('#pinmsg').className === 'hint') $('#pinmsg').textContent = ''; return; }
+  pinmsg(`${st.pinNote || (pin.src === 'pick' ? 'picked pin' : 'typed pin')} → e ${fmt(pin.e, 4)} mm, ∠ ${fmt(pin.ang, 2)}°${pin.src === 'pick' ? ' (picked geometry; follows the spin axis)' : ''}${pin.warn ? ' — ⚠ ' + pin.warn : ''}`, !!pin.warn);
 }
+// M7: an orbiting-load body that became Hub or Boundary (or is gone) is cleared, so the maths matches the selector
+const loadOK = L => L.kind !== 'body' || (st.bodies[L.body] && roleOf(st.bodies[L.body]) !== 'hub' && roleOf(st.bodies[L.body]) !== 'boundary');
+function checkLoad() { if (loadOK(st.bal.load)) return false; const b = st.bodies[st.bal.load.body]; st.bal.load = { kind: 'none', body: -1, mass: null }; status(`Orbiting load cleared${b ? ` (${b.name} is now ${ROLES.find(r => r.id === roleOf(b)).label})` : ''}`); return true; }
 function renderBalanceInputs() {
+  checkLoad();
   const hi = roleIndex(st.bodies), hub = st.bodies[hi.hub], a = st.bal.added;
   $('#added').innerHTML = `<option value="hub">Same as hub${hub ? ' (' + esc(materialName(hub.mat ?? materialId(hub.rho), hub.rho)) + ')' : ''}</option>` + MATERIALS.map(m => `<option value="${m.id}">${m.name}</option>`).join('') + `<option value="${CUSTOM}">Custom…</option>`;
   $('#added').value = a.mode; $('#addedrho').hidden = a.mode !== CUSTOM; if (a.mode === CUSTOM && a.rho) $('#addedrho').value = a.rho;
@@ -347,7 +360,6 @@ function renderBalanceInputs() {
   $('#load').innerHTML = '<option value="none">none</option><option value="mass">typed mass (g)</option>' + st.bodies.map((b, i) => roleOf(b) === 'hub' || roleOf(b) === 'boundary' ? '' : `<option value="b${i}">${esc(b.name)}${roleOf(b) ? ' [' + ROLES.find(r => r.id === roleOf(b)).label + ']' : ''}</option>`).join('');
   $('#load').value = L.kind === 'body' ? 'b' + L.body : L.kind; if (!$('#load').value) { $('#load').value = 'none'; }
   $('#loadmass').hidden = L.kind !== 'mass'; if (L.kind === 'mass' && L.mass) $('#loadmass').value = L.mass;
-  const pin = pinNow(); $('#pine').value = pin ? +pin.e.toPrecision(8) : ''; $('#pinang').value = pin ? +pin.ang.toPrecision(8) : '';
   if (st.bal.rpm) $('#rpm').value = st.bal.rpm; $('#tolk').value = st.bal.tol?.kind || 'gmm'; if (st.bal.tol?.value != null) $('#tolv').value = st.bal.tol.value;
 }
 const ang = a => { if (a == null) return '—'; const x = +(+a).toFixed(2); return (x >= 360 ? 0 : x).toFixed(2) + '°'; };
@@ -356,7 +368,7 @@ function balanceState() {
   const hi = roleIndex(st.bodies), hub = st.bodies[hi.hub];
   if (!hub) return { hi };
   const ax = st.axis, hubMom = add(bodyMoments(hub), st.generated?.mom || zero()), H = staticOf(hubMom, ax), pin = pinNow(), L = st.bal.load;
-  const lb = L.kind === 'body' ? st.bodies[L.body] : null, lm = L.kind === 'mass' ? L.mass : lb ? bmass(lb) : null;
+  const lb = L.kind === 'body' && loadOK(L) ? st.bodies[L.body] : null, lm = L.kind === 'mass' ? L.mass : lb ? bmass(lb) : null;
   const loadU = pin && lm > 0 ? orbitU(lm, pin) : [0, 0], base = [H.U[0] + loadU[0], H.U[1] + loadU[1]];
   const cws = hi.cw.filter(i => st.bodies[i].on), cwMom = sumMoments(cws.map(i => bodyMoments(st.bodies[i]))), cwS = cws.length ? staticOf(cwMom, ax) : null;
   const M = hubMom.m + (cws.length ? cwMom.m : 0);
@@ -365,6 +377,7 @@ function balanceState() {
   return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, cws, cwS, check, M, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
 }
 function renderBalance(fr, sp) {
+  renderPin();
   const out = $('#statout'), chk = $('#checkout'), S = balanceState(), b = basis(st.axis);
   const pin = S.pin, sp2 = sp || [0, 50], z0 = Math.min(sp2[0], pin?.z ?? 0), z1 = Math.max(sp2[1], pin?.z ?? 0); view.setPin(pin ? pinPoint(pin, st.axis, z0) : null, pin ? pinPoint(pin, st.axis, z1) : null);
   if (!S.hub) { out.innerHTML = '<p class="hint">Set one body\'s role to <b>Hub</b> for the static readout (and one to Boundary for the generator, slice 2).</p>'; chk.innerHTML = ''; return; }
@@ -380,7 +393,7 @@ function renderBalance(fr, sp) {
   if (!S.check) { chk.innerHTML = S.hi.cw.length ? '' : '<p class="hint">Check mode: set existing counterweight bodies to <b>Counterweight (existing)</b>.</p>'; return; }
   const c = S.check, pct = c.pct == null ? '—' : (100 * c.pct).toFixed(2) + ' %';
   const ou = c.state ? `<span class="ou ${c.state}" id="ouflag">${c.state === 'over' ? 'OVER-balanced' : c.state === 'under' ? 'UNDER-balanced' : 'matched'} ×${fmt(c.ratio, 4)}</span>` : '—';
-  const verdict = c.pass == null ? '<span class="hint">set a tolerance (g·mm or G grade)</span>' : `<span class="verdict ${c.pass ? 'pass' : 'fail'}" id="verdict">${c.pass ? 'PASS' : 'FAIL'}</span> |resid| ${fmt(c.resid.mag, 5)} ${c.pass ? '≤' : '>'} ${fmt(c.limit, 5)} g·mm${st.bal.tol.kind === 'G' ? ` (G${st.bal.tol.value} at ${st.bal.rpm} rpm, M ${fmt(S.M, 5)} g)` : ''}`;
+  const verdict = c.pass == null ? (st.bal.tol?.kind === 'G' && st.bal.tol.value > 0 && !(st.bal.rpm > 0) ? '<span class="hint" id="needrpm">enter an RPM to grade against G' + esc(st.bal.tol.value) + '</span>' : '<span class="hint">set a tolerance (g·mm or G grade)</span>') : `<span class="verdict ${c.pass ? 'pass' : 'fail'}" id="verdict">${c.pass ? 'PASS' : 'FAIL'}</span> |resid| ${fmt(c.resid.mag, 5)} ${c.pass ? '≤' : '>'} ${fmt(c.limit, 5)} g·mm${st.bal.tol.kind === 'G' ? ` (G${st.bal.tol.value} at ${st.bal.rpm} rpm, M ${fmt(S.M, 5)} g)` : ''}`;
   chk.innerHTML = `<h3 class="hint">Check mode — ${S.cws.length} existing counterweight bod${S.cws.length === 1 ? 'y' : 'ies'}</h3><table>
     ${row('Hub + load', fmt(c.base.mag, 5), ang(c.base.ang))}
     ${row('Counterweight', fmt(c.cw.mag, 5), ang(c.cw.ang), `m ${fmt(S.cwS.m, 5)} g${c.cwRelPin != null ? ` · ${fmt(c.cwRelPin, 2)}° from the pin` : ''}`)}
@@ -428,10 +441,11 @@ function runContain() {
 // Volume to 0.001 mm³ (and ≥ 7 significant figures), mass g, density g/cc, CG from the model origin to 0.0001 mm.
 const NXH = ['Body', 'STEP name', 'Role', 'Volume mm3', 'Mass g', 'Density g/cc', 'CG X mm', 'CG Y mm', 'CG Z mm', 'Volume ± mm3', 'CG ± mm', 'Mesh'];
 const sig = (v, dec, p = 7) => { const a = v.toFixed(dec), b = v.toPrecision(p); return (b.replace(/^-/, '').replace('.', '').replace(/^0+/, '').length > a.replace(/^-/, '').replace('.', '').replace(/^0+/, '').length && !/e/.test(b)) ? b : a; };
+const f4 = v => { const t = v.toFixed(4); return /^-0\.0+$/.test(t) ? t.slice(1) : t; }; // L10: no '-0.0000'
 function nxRows() {
   return st.bodies.map(b => {
     const d = derive(b.vol), m = bmass(b), u = b.unc, low = u?.low ? '≥' : '';
-    return [b.name, b.stepName ?? '', ROLES.find(r => r.id === roleOf(b)).label, sig(d.m, 3), sig(m, 4), (b.rho / 1000).toFixed(5), ...d.c.map(v => v.toFixed(4)),
+    return [b.name, b.stepName ?? '', ROLES.find(r => r.id === roleOf(b)).label, sig(d.m, 3), sig(m, 4), (b.rho / 1000).toFixed(5), ...d.c.map(f4),
       u ? low + (u.dV * d.m).toPrecision(2) : '', u ? low + u.dc.toPrecision(2) : '', b.mesh ? `${b.mesh.tris} tris, defl ${b.mesh.deflection.toPrecision(2)} mm${b.mesh.coarsened ? ', coarsened' : ''}` : ''];
   });
 }
@@ -466,8 +480,10 @@ function exportAs(kind) {
     tools: st.tools.map(t => ({ ...t, removal: t.sign < 0 })), residual: resJson(r1, axisNames(fr)), assemblyCG: assemblyCGJson, optimisation: st.last }, null, 1), 'application/json');
 }
 function loadSession(j) {
-  if (!Array.isArray(j.tools)) return status('JSON has no tools[]');
-  st.tools = j.tools.map(({ id, removal, ...t }) => makeTool(t.kind, t));
+  if (!j || typeof j !== 'object' || !Array.isArray(j.tools)) return status('JSON has no tools[]');
+  // H4: tools are rebuilt from schema-checked fields only (src/session-schema.js)
+  let badTools = 0; st.tools = j.tools.slice(0, 200).flatMap(t => { const { o, bad } = cleanTool(t); badTools += bad; return o ? [makeTool(o.kind, o)] : []; });
+  if (badTools) card('warn', `Session: ${badTools} invalid tool field${badTools > 1 ? 's' : ''} ignored.`);
   const out = restoreSession(j, st.bodies);
   const rb = restoreBalance(j.balance, st.bodies); st.bal = rb.bal; st.check = null; view.setOutside(null);
   for (const b of st.bodies) b.mat ??= materialId(b.rho);

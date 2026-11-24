@@ -1,3 +1,4 @@
+import { CAD_FLOOR, applyCadFloor } from './bodies.js';
 import { readDensities, fileUncertainty, solidTable, subsetStep, latin1, unlatin1 } from './step-meta.js';
 import { buildBodies, buildEntries } from './bodies.js';
 import { PROBE, PROBE2, ERR, LIMITS, plan, planPerBody, refineOk, diagonal, triCounts, fmtK, bboxes } from './mesh-plan.js';
@@ -76,7 +77,7 @@ export function importStep(occt, buf, { mode = 'accurate', defRho = 7850, name =
     (big ? warn : info).push(note.join('; ') + `; ${est}${low}` + (big ? ' — accuracy is lower, see the per-body uncertainty' : ` (below ${ERR.rel.toExponential(0)} / ${ERR.com * 1000} µm)`));
   }
   let fu = null; try { fu = fileUncertainty(text); } catch { }
-  if (fu != null && fu >= 0.01) info.push(`the file declares a ${+fu.toPrecision(3)} mm modelling uncertainty: the per-body ± covers tessellation only, not CAD edge-tolerance gaps, which can add a few 1e-4 of volume on small bodies`);
+  if (fu != null && fu >= CAD_FLOOR.minTol) { applyCadFloor(bodies, fu); info.push(`the file declares a ${+fu.toPrecision(3)} mm modelling uncertainty: CAD edge-tolerance gaps can shift volume and CG at any mesh size, so every per-body ± is floored at ${(CAD_FLOOR.rel * fu).toExponential(0)} of volume and ${+(CAD_FLOOR.cg * fu * 1000).toPrecision(2)} µm CG and marked "≥"`); }
   const fin = bodies.reduce((a, b) => a + b.idx.length / 3, 0);
   Object.assign(stats, { fileUncertainty: fu, ms: Date.now() - t0, D, scale, plan: how, mode: bodies.every(b => b.mesh?.passes === 2) ? 'accurate' : bodies.some(b => b.mesh?.passes === 2) ? 'mixed' : 'fast', tris: fin });
   return { bodies, warn, info, stats };

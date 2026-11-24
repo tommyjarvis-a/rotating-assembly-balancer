@@ -1,0 +1,319 @@
+{
+ "app": "rotating-assembly-balancer",
+ "version": "0.2.0-alpha.2",
+ "units": {
+  "length": "mm",
+  "mass": "g",
+  "density": "kg/m3"
+ },
+ "axis": {
+  "point": [
+   0,
+   0,
+   0
+  ],
+  "direction": [
+   0,
+   0,
+   1
+  ],
+  "source": "Z",
+  "basis": {
+   "u": [
+    1,
+    0,
+    0
+   ],
+   "v": [
+    0,
+    1,
+    0
+   ],
+   "w": [
+    0,
+    0,
+    1
+   ]
+  },
+  "note": "spin axis through point along direction (= w); u, v ⊥ w, right-handed; axial positions are measured along w from point"
+ },
+ "bodies": [
+  {
+   "index": 0,
+   "name": "hub",
+   "file": "scroll-hub.stp",
+   "vol": 56548.66676907,
+   "bbox": [
+    -28.5,
+    -29.999906539916992,
+    0,
+    31.5,
+    29.999906539916992,
+    20
+   ],
+   "sign": 1,
+   "on": true,
+   "rho": 7850,
+   "src": "<img src=x onerror=\"window.__xss='bodySrc'\">",
+   "removal": false,
+   "mass": 443.90703413719945,
+   "role": "",
+   "mat": "steel"
+  },
+  {
+   "index": 1,
+   "name": "pin",
+   "file": "scroll-hub.stp",
+   "vol": 753.9822235876205,
+   "bbox": [
+    -4,
+    2.0000123977661133,
+    20,
+    4,
+    9.999987602233887,
+    35
+   ],
+   "sign": 1,
+   "on": true,
+   "rho": "7850\"><img src=x onerror=\"window.__xss='bodyRho'\">",
+   "src": "STEP",
+   "removal": false,
+   "mass": 5.918760455162821,
+   "role": "",
+   "mat": "steel"
+  },
+  {
+   "index": 2,
+   "name": "scroll",
+   "file": "scroll-hub.stp",
+   "vol": 9817.476869630638,
+   "bbox": [
+    -25,
+    -18.999921798706055,
+    40,
+    25,
+    30.999921798706055,
+    45
+   ],
+   "sign": 1,
+   "on": true,
+   "rho": 7850,
+   "src": "STEP",
+   "removal": false,
+   "mass": 77.06719342660051,
+   "role": "",
+   "mat": "<img src=x onerror=\"window.__xss='bodyMat'\">"
+  },
+  {
+   "index": 3,
+   "name": "boundary",
+   "file": "scroll-hub.stp",
+   "vol": 254469.00046081565,
+   "bbox": [
+    -45,
+    -44.99985885620117,
+    -10,
+    45,
+    44.99985885620117,
+    30
+   ],
+   "sign": 1,
+   "on": "<img src=x onerror=\"window.__xss='bodyOn'\">",
+   "rho": 7850,
+   "src": "STEP",
+   "removal": false,
+   "mass": 1997.5816536174027,
+   "role": "",
+   "mat": "steel"
+  },
+  {
+   "index": 4,
+   "name": "cw",
+   "file": "scroll-hub.stp",
+   "vol": 2788.1633054204462,
+   "bbox": [
+    -39.392311096191406,
+    -34.64101791381836,
+    0,
+    -15.5,
+    -5.383093357086182,
+    10
+   ],
+   "sign": 1,
+   "on": true,
+   "rho": 7850,
+   "src": "STEP",
+   "removal": false,
+   "mass": 21.887081947550502,
+   "role": "",
+   "mat": "steel"
+  },
+  {
+   "index": 5,
+   "name": "cw_out",
+   "file": "scroll-hub.stp",
+   "vol": 714.712328676944,
+   "bbox": [
+    38.52739715576172,
+    0,
+    0,
+    50,
+    17.10100746154785,
+    5
+   ],
+   "sign": 1,
+   "on": true,
+   "rho": 7850,
+   "src": "STEP",
+   "removal": false,
+   "mass": 5.61049178011401,
+   "role": "",
+   "mat": "steel"
+  }
+ ],
+ "balance": {
+  "added": {
+   "mode": "hub",
+   "rho": null
+  },
+  "pin": {
+   "src": "pick",
+   "p": [
+    0,
+    6,
+    20
+   ],
+   "d": [
+    0,
+    0,
+    1
+   ],
+   "r": "<img src=x onerror=\"window.__xss='pinR'\">"
+  },
+  "load": {
+   "kind": "none"
+  },
+  "rpm": null,
+  "tol": {
+   "kind": "gmm",
+   "value": null
+  },
+  "note": "angles in degrees in the spin-axis frame (0° = +u, 90° = +v, right-handed about the axis direction); e in mm; masses in g"
+ },
+ "tools": [
+  {
+   "id": 1,
+   "kind": "sector",
+   "role": "counterweight",
+   "name": "<img src=x onerror=\"window.__xss='toolName'\">",
+   "x": 0,
+   "y": 0,
+   "z": 45,
+   "rx": 0,
+   "ry": 0,
+   "rz": 0,
+   "h": 5,
+   "rho": 7850,
+   "sign": 1,
+   "ri": 20,
+   "ro": 40,
+   "a0": 0,
+   "sweep": 90,
+   "free": {
+    "h": [
+     "1\"><img src=x onerror=\"window.__xss='toolFree'\">",
+     2
+    ]
+   },
+   "removal": false
+  },
+  {
+   "id": 2,
+   "kind": "prism",
+   "role": "counterweight",
+   "name": "prism2",
+   "x": 0,
+   "y": 0,
+   "z": -15,
+   "rx": 0,
+   "ry": 0,
+   "rz": 0,
+   "h": 5,
+   "rho": 7850,
+   "sign": 1,
+   "sc": 1,
+   "pts": [
+    [
+     "</textarea><img src=x onerror=\"window.__xss='prismPts'\">",
+     1
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     1,
+     0
+    ]
+   ],
+   "free": {
+    "rz": [
+     -180,
+     180
+    ],
+    "h": [
+     0.2,
+     20
+    ]
+   },
+   "removal": false
+  },
+  {
+   "kind": "<img src=x onerror=\"window.__xss='toolKind'\">"
+  }
+ ],
+ "residual": {
+  "components": [
+   "x",
+   "y"
+  ],
+  "basis": {
+   "u": [
+    1,
+    0,
+    0
+   ],
+   "v": [
+    0,
+    1,
+    0
+   ],
+   "w": [
+    0,
+    0,
+    1
+   ]
+  },
+  "U": [
+   1108.1961062760656,
+   880.1113395466849
+  ],
+  "C": [
+   25360.512938892876,
+   42836.50307915383
+  ],
+  "mass": 2596.81446886005,
+  "note": "U and C are world x, y components (spin axis +Z)"
+ },
+ "optimisation": null,
+ "assemblyCG": {
+  "c": [
+   "<img src=x onerror=\"window.__xss='cg'\">",
+   0,
+   0
+  ],
+  "mass": 1,
+  "bodies": [],
+  "stale": false
+ }
+}

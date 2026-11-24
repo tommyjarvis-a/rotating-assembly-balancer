@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0-alpha.2 — 2026-11-24 (alpha)
+
+Fix release for the c8cc29d (alpha.1) gate. The counterweight generator moves to 0.2.0-alpha.3.
+- **H4 — session files can no longer run script.** Every restored field is schema-checked (`src/session-schema.js`):
+  body `rho` (finite, 0–1e5 kg/m³), `src` (allowlist), `on` (boolean), `mat` (preset ids), `role` (string, then
+  the role rules); tools are rebuilt from checked fields only (known kind, name ≤ 80 chars, role allowlist, finite
+  numbers, `free` bounds as finite pairs on known parameters, prism `pts` as ≤ 2000 finite pairs); pin radius and the
+  assembly CG must be finite numbers. Rejected fields are dropped (current values or defaults stay) and counted in a
+  session card. The sinks the gate found (`src`, ρ, free bounds, prism points, tool kind) are escaped, and a strict
+  Content-Security-Policy meta is added (`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self';
+  style-src 'self'`; no `unsafe-inline` / `unsafe-eval`, `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`).
+  This was in every version since 0.1.0.
+- **M7** — an orbiting-load body that becomes Hub or Boundary (or is gone) clears the load (status line says so), so
+  the maths always matches the selector; `balanceState` also ignores such a load.
+- **M8** — a picked drive pin stays geometry (axis point + direction): the e / ∠ boxes and the pin message are refreshed
+  on every update, so they follow axis changes. Editing e or ∠ of a picked pin moves the pin about the spin axis
+  (an unchanged box keeps the current value; the tilt is kept) instead of turning it into a typed pin with a stale e.
+- **M9** — the containment edge-crossing test uses the same touching tolerance: a crossing needs the edge's ends on
+  opposite sides of a boundary triangle by more than the tolerance. A counterweight whose OD sits on a curved bore
+  (or is proud by less than the tolerance) is now inside; genuine crossings through a concave boundary are still caught.
+- **L8** — a G-grade tolerance without an RPM says "enter an RPM to grade against G…".
+- **L9** — files declaring a modelling uncertainty δ ≥ 0.01 mm floor every per-body ± at 0.01·δ/mm relative volume and
+  0.2·δ CG (1e-3 and 20 µm at δ = 0.1 mm, covering the 9e-4 / 16 µm seen on the NX test file vs OCP) and mark it "≥".
+- **L10** — no "-0.0000" in the body table.
+- **L11** — the panel width follows the window (clamp 360–600 px, 34 vw; drag its edge to widen), and Role and Material
+  share one column in the body list, so it fits at 470 px and an 800 px window keeps a 440 px view.
+- Tests: 73 Node tests (71 pass, 2 optional OCP checks skipped), new `test/fixes020a2.test.mjs` (schema incl. the
+  malicious-session fixture `test/fixtures/malicious-session.json`, picked-pin geometry, touching containment on a
+  curved bore plus a real concave crossing, CAD floor); `tools/ui-smoke-020a2.cjs` (Playwright, 19 checks: CSP with
+  import / WASM / workers, malicious session, M7, M8, L8, L10, L11, no CSP violations).
+
 ## 0.2.0-alpha.1 — 2026-11-24 (alpha)
 
 Slice 1 of the counterweight generator: set-up, static readout and check mode. No material is generated yet.

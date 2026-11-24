@@ -171,6 +171,8 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - `tools/ui-smoke-020.cjs` (0.2.0): roles, materials, axis point/vector tools, drive pin, orbiting load, static readout,
   check mode with containment and Cancel, NX table copy, session round trip and an older session
   (`python3 -m http.server 8765 & node tools/ui-smoke-020.cjs`).
+- `tools/ui-smoke-020a2.cjs` (0.2.0-alpha.2): CSP (import, WASM, workers, no violations), malicious session, orbiting
+  load cleared on role change, picked pin following the axis, RPM prompt, no "-0.0000", panel / body list widths.
 
 ## Size, dependencies, token/code efficiency
 
@@ -211,11 +213,18 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
   counterweight on −(hub + load) ÷ |hub + load|), angle error, counterweight angle from the pin, ISO grade of the
   residual (rotor = hub + counterweights), PASS / FAIL against a g·mm or G-grade tolerance, and *Check containment*
   (worker with Cancel): ray-parity point-in-mesh on X/Y/Z rays with a majority vote, plus an edge-crossing test.
-  Vertices within 2 × the mesh deflection of the boundary count as inside (touching).
+  Vertices within 2 × the mesh deflection of the boundary count as inside (touching), and so do edges that only
+  touch the boundary surface within that tolerance (a counterweight OD on a curved bore).
 - **Body table** for NX Measure Bodies: volume, mass, density, CG from the model origin and mesh ± per body;
   *Copy table* puts tab-separated text with a header on the clipboard.
 
-## Limitations (0.2.0-alpha.1)
+## Security
+
+Everything runs in the browser; files never leave it. Session JSON is treated as untrusted: each field is
+schema-checked on restore (`src/session-schema.js`) and data-derived text is escaped where it is shown. The page sets a
+strict Content-Security-Policy (`script-src 'self' 'wasm-unsafe-eval'`, no inline script or style).
+
+## Limitations (0.2.0-alpha.2)
 
 - Slice 1 does not generate counterweight material yet (slice 2) or export it (slice 3). The solver API
   (`correctionTarget` in `src/statics.js`) takes a list of correction planes (one = static; two-plane later) and an
@@ -223,8 +232,9 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - Per-body meshing needs a file without assembly structure (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) whose
   solids map 1:1 onto meshes; otherwise the whole-file plan of 0.1.x is used. It adds a calibration probe and up to
   three mesh groups, so large multi-body files take longer to import (a 9-body, 0.5M-triangle NX file: ~31 s in Chromium).
-- The per-body ± covers tessellation only. CAD edge-tolerance gaps (files declaring a loose modelling uncertainty,
-  e.g. 0.1 mm) can add a few 1e-4 of volume on small bodies at any mesh size; an info card says so.
+- The per-body ± comes from tessellation. For files that declare a loose modelling uncertainty δ (e.g. 0.1 mm) it is
+  floored empirically at 0.01·δ/mm relative volume and 0.2·δ CG and marked "≥", since CAD edge-tolerance gaps shift
+  volume and CG at any mesh size; a body that OCP itself reports as invalid can still be off by more.
 - Containment uses the meshes: a counterweight touching a curved boundary can sit up to the chordal deflection
   outside; that is what the tolerance absorbs.
 

@@ -76,13 +76,17 @@ export function classify(I, x, tol = 0) {
   for (const g of I.grids) { const r = rayParity(I, g, x); if (r.on) return 'on'; if (r.odd) votes++; }
   return votes >= 2 ? 'in' : 'out';
 }
-// Segment p→q against triangle (Möller–Trumbore); proper crossing strictly inside the segment.
-function segTri(p, q, a, b, c, eps) {
-  const d = sub(q, p), e1 = sub(b, a), e2 = sub(c, a), h = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]], det = dot(e1, h);
-  if (Math.abs(det) < 1e-14 * Math.hypot(...d) * Math.hypot(...e1) * Math.hypot(...e2)) return false;
-  const f = 1 / det, s = sub(p, a), u = f * dot(s, h); if (u <= 0 || u >= 1) return false;
-  const qv = [s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0]], v = f * dot(d, qv); if (v <= 0 || u + v >= 1) return false;
-  const t = f * dot(e2, qv); return t > eps && t < 1 - eps;
+// Segment p→q against triangle: a proper crossing — the ends are on opposite sides of the triangle's plane, each
+// more than tol (mm, the touching tolerance) from it, and the crossing point is strictly inside the triangle. An edge
+// lying on or touching the boundary surface (e.g. a counterweight OD on a curved bore) is not a crossing (M9).
+function segTri(p, q, a, b, c, tol) {
+  const e1 = sub(b, a), e2 = sub(c, a), n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]], nl = Math.hypot(...n); if (!(nl > 0)) return false;
+  const dp = dot(n, sub(p, a)) / nl, dq = dot(n, sub(q, a)) / nl;
+  if (!((dp > tol && dq < -tol) || (dp < -tol && dq > tol))) return false;
+  const t = dp / (dp - dq), x = [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), p[2] + t * (q[2] - p[2])], r = sub(x, a);
+  const d00 = dot(e1, e1), d01 = dot(e1, e2), d11 = dot(e2, e2), d20 = dot(r, e1), d21 = dot(r, e2), den = d00 * d11 - d01 * d01; if (!(den > 0)) return false;
+  const v = (d11 * d20 - d01 * d21) / den, w = (d00 * d21 - d01 * d20) / den;
+  return v > 0 && w > 0 && v + w < 1;
 }
 // Containment of body (pos, idx) in boundary index I. Vertices are de-duplicated by exact position.
 // strict: only points strictly inside count as inside (used for hub overlap: touching is not overlap).
@@ -97,7 +101,7 @@ export function containment(I, pos, idx, { tol = 1e-6 * I.diag, maxEdgeTests = 4
   const uniqOut = [...seen.values()].filter(Boolean).length;
   // edge crossings (concave boundaries): body edges that cross the boundary surface away from their ends
   let crossings = 0, tests = 0, skipped = false; const edges = new Set();
-  const g = I.grids[2], { a, b, sa, sb } = g, eps = tol / Math.max(I.diag, 1e-12);
+  const g = I.grids[2], { a, b, sa, sb } = g, eps = tol;
   outer: for (let t = 0; t < idx.length / 3; t++) for (let k = 0; k < 3; k++) {
     const i = idx[3 * t + k], j = idx[3 * t + (k + 1) % 3], key = i < j ? i * 4294967296 + j : j * 4294967296 + i; if (edges.has(key)) continue; edges.add(key);
     const p = V(pos, i), q = V(pos, j), i0 = cl((Math.min(p[a], q[a]) - I.lo[a]) / sa), i1 = cl((Math.max(p[a], q[a]) - I.lo[a]) / sa), j0 = cl((Math.min(p[b], q[b]) - I.lo[b]) / sb), j1 = cl((Math.max(p[b], q[b]) - I.lo[b]) / sb);
