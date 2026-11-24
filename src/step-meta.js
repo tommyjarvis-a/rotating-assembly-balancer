@@ -54,3 +54,57 @@ export function readDensities(text) {
   }
   return out;
 }
+
+// ---------- solid bodies (0.2.0): names and per-body subsets ----------
+// Solid items of the shape representations, in item order. occt-import-js meshes one free shape (product)
+// at a time and keeps the item order within a representation, so for a file without assembly structure
+// (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) the k-th solid is the k-th mesh. The import verifies
+// this (count and bounding boxes) before relying on it.
+const SOLID = /^(MANIFOLD_SOLID_BREP|BREP_WITH_VOIDS|FACETED_BREP)$/;
+const REP = /SHAPE_REPRESENTATION$/;
+export function solidTable(text) {
+  const ents = parseEntities(text), reps = [], solids = [];
+  for (const [id, s] of ents) {
+    const t = type(s); if (!t || !REP.test(t)) continue;
+    const items = itemsOf(s), sol = items.filter(r => SOLID.test(type(ents.get(r) || '') || ''));
+    if (sol.length) { reps.push({ id, items, solids: sol }); for (const r of sol) solids.push({ id: r, rep: id, name: str1(ents.get(r)) ?? '' }); }
+  }
+  return { solids, reps, assembly: /NEXT_ASSEMBLY_USAGE_OCCURRENCE|MAPPED_ITEM/.test(text) };
+}
+// Second argument of a representation: the items tuple "(#a,#b,…)".
+function itemsOf(s) {
+  const r = itemsSpan(s); return r ? refs(s.slice(r[0], r[1])) : [];
+}
+function itemsSpan(s) { // [start, end) of the items tuple contents inside an entity body string
+  let i = s.indexOf('('), q = false; if (i < 0) return null;
+  for (i = i + 1; i < s.length; i++) { const ch = s[i]; if (ch === "'") q = !q; else if (!q && ch === ',') break; }
+  const a = s.indexOf('(', i); if (a < 0) return null;
+  let depth = 0; for (let j = a; j < s.length; j++) { if (s[j] === '(') depth++; else if (s[j] === ')' && --depth === 0) return [a + 1, j]; }
+  return null;
+}
+// Copy of the STEP text in which only the solids in `keep` (entity ids) remain in their representations.
+// Non-solid items (placements) are kept. Representations left without a solid are emptied of solids only.
+export function subsetStep(text, table, keep) {
+  const keepSet = new Set(keep), edits = [];
+  for (const rep of table.reps) {
+    const m = new RegExp(`(?:^|[;\\s])#${rep.id}\\s*=`, 'm').exec(text); if (!m) continue;
+    const start = m.index + m[0].length; let end = start, q = false;
+    for (; end < text.length; end++) { const ch = text[end]; if (ch === "'") q = !q; else if (!q && ch === ';') break; }
+    const bodyStr = text.slice(start, end), sp = itemsSpan(bodyStr); if (!sp) continue;
+    const items = rep.items.filter(r => !rep.solids.includes(r) || keepSet.has(r));
+    edits.push([start + sp[0], start + sp[1], items.map(r => '#' + r).join(',')]);
+  }
+  edits.sort((x, y) => y[0] - x[0]); let out = text;
+  for (const [a, b, t] of edits) out = out.slice(0, a) + t + out.slice(b);
+  return out;
+}
+export const latin1 = buf => { let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000)); return s; };
+export const unlatin1 = s => { const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255; return b; };
+// Declared modelling uncertainty (GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT distance_accuracy_value) in mm, or null.
+export function fileUncertainty(text) {
+  const m = /UNCERTAINTY_MEASURE_WITH_UNIT\s*\(\s*(?:LENGTH_MEASURE\s*\()?\s*([-\d.E+]+)\s*\)?\s*,\s*#(\d+)/i.exec(text); if (!m) return null;
+  const v = +m[1], ents = new RegExp(`#${m[2]}\\s*=([^;]*);`).exec(text)?.[1] || '';
+  const pre = { '.MILLI.': 1, '.CENTI.': 10, '.MICRO.': 1e-3 }[(/SI_UNIT\s*\(\s*(\.[A-Z]+\.)/.exec(ents) || [])[1]];
+  const k = pre ?? (/SI_UNIT\s*\(\s*\$\s*,\s*\.METRE\./.test(ents) ? 1000 : /INCH/i.test(ents) ? 25.4 : null);
+  return Number.isFinite(v) && k ? v * k : null;
+}

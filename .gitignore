@@ -4,3 +4,6 @@ node_modules/
 # never commit real customer/NX parts: keep them outside the repo or here
 private/
 *.prt
+# Steven's proprietary NX part and anything derived from it
+test.stp
+rab-test-files/

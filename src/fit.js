@@ -37,16 +37,58 @@ const bad = (f, what) => !f || !isFinite(f.r) || !(f.r > 0) ? { error: `${what}:
 // N = Σ area·n nᵀ (smallest eigenvalue λ0 ≪ λ1); the radius and axis position come from a circle fit of the face's
 // vertices projected along it. Cones, spheres, tori, planes and freeform faces are rejected.
 export function fitCylinder(pos, idx, first, last) {
+  const tris = []; for (let t = first; t <= last; t++) tris.push(t);
+  return fitCylinderTris(pos, idx, tris);
+}
+// Same fit on an arbitrary triangle list (a B-rep face, or a mesh region from regionTris when the importer
+// gave no face ids).
+export function fitCylinderTris(pos, idx, tris) {
   const N = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-  for (let t = first; t <= last; t++) {
+  for (const t of tris) {
     const a = V(pos, idx[3 * t]), n = cross(sub(V(pos, idx[3 * t + 1]), a), sub(V(pos, idx[3 * t + 2]), a)), A = Math.hypot(...n); if (!A) continue;
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) N[3 * i + j] += n[i] * n[j] / A;
   }
   const e = eig3(N), o = [0, 1, 2].sort((i, j) => e.val[i] - e.val[j]), [l0, l1, l2] = o.map(i => e.val[i]);
   if (!(l1 > FIT.spread * l2)) return { error: 'picked face is flat (not a cylinder) — use "circle" for a planar face or hole edge' };
   if (!(l0 < FIT.flat * l1)) return { error: 'picked face is not cylindrical (cone, sphere, torus or freeform)' };
-  const d = canon(unit(e.vec[o[0]])), f = circle(uniq(pos, idx, first, last), d), no = bad(f, 'cylinder');
+  const seen = new Set(), pts = []; for (const t of tris) for (let k = 0; k < 3; k++) { const i = idx[3 * t + k]; if (!seen.has(i)) { seen.add(i); pts.push(V(pos, i)); } }
+  const d = canon(unit(e.vec[o[0]])), f = circle(pts, d), no = bad(f, 'cylinder');
   return no || { p: f.c, d, r: f.r, rms: f.rms };
+}
+// Planar face → its unit normal (area-weighted, outward as meshed) and centroid; rejects curved faces.
+export function fitPlane(pos, idx, tris) {
+  const S = [0, 0, 0], c = [0, 0, 0]; let A = 0;
+  for (const t of tris) {
+    const a = V(pos, idx[3 * t]), b = V(pos, idx[3 * t + 1]), q = V(pos, idx[3 * t + 2]), n = cross(sub(b, a), sub(q, a)), ar = Math.hypot(...n) / 2; if (!ar) continue;
+    for (let k = 0; k < 3; k++) { S[k] += n[k] / 2; c[k] += ar * (a[k] + b[k] + q[k]) / 3; } A += ar;
+  }
+  if (!(A > 0)) return { error: 'picked face has no area' };
+  const n = Math.hypot(...S); if (!(n > (1 - 1e-4) * A)) return { error: 'picked face is not planar — pick a flat face for its normal' };
+  return { d: S.map(v => v / n), p: c.map(v => v / A), area: A };
+}
+// Mesh region around triangle t0 for meshes without B-rep face ids: grow across shared (welded) edges while the
+// neighbour's normal stays within maxDeg of the triangle it is reached from (a smooth surface patch).
+export function regionTris(pos, idx, t0, { maxDeg = 12, maxTris = 50000 } = {}) {
+  let span = 0; for (let i = 0; i < pos.length; i++) span = Math.max(span, Math.abs(pos[i]));
+  const q = 1e6 / (span || 1), id = new Map(), w = new Int32Array(pos.length / 3);
+  for (let i = 0; i < w.length; i++) { const key = Math.round(pos[3 * i] * q) + ',' + Math.round(pos[3 * i + 1] * q) + ',' + Math.round(pos[3 * i + 2] * q); if (!id.has(key)) id.set(key, id.size); w[i] = id.get(key); }
+  const nt = idx.length / 3, E = new Map(), nrm = t => { const a = V(pos, idx[3 * t]), n = cross(sub(V(pos, idx[3 * t + 1]), a), sub(V(pos, idx[3 * t + 2]), a)), l = Math.hypot(...n); return l ? n.map(v => v / l) : null; };
+  for (let t = 0; t < nt; t++) for (let k = 0; k < 3; k++) { const a = w[idx[3 * t + k]], b = w[idx[3 * t + (k + 1) % 3]], key = a < b ? a + ',' + b : b + ',' + a; (E.get(key) || E.set(key, []).get(key)).push(t); }
+  const cosMax = Math.cos(maxDeg * Math.PI / 180), seen = new Set([t0]), out = [t0], stack = [t0];
+  while (stack.length && out.length < maxTris) {
+    const t = stack.pop(), nt0 = nrm(t); if (!nt0) continue;
+    for (let k = 0; k < 3; k++) {
+      const a = w[idx[3 * t + k]], b = w[idx[3 * t + (k + 1) % 3]];
+      for (const u of E.get(a < b ? a + ',' + b : b + ',' + a)) { if (seen.has(u)) continue; const nu = nrm(u); if (!nu || dot(nu, nt0) < cosMax) continue; seen.add(u); out.push(u); stack.push(u); }
+    }
+  }
+  return out;
+}
+// Triangles of the B-rep face holding triangle t, or a mesh region when there are no face ids.
+export function faceTris(b, t) {
+  const f = faceOf(b.faces || [], t);
+  if (f) { const out = []; for (let i = f[0]; i <= f[1]; i++) out.push(i); return { tris: out, how: 'B-rep face' }; }
+  return { tris: regionTris(b.pos, b.idx, t), how: 'mesh region' };
 }
 
 // Circular edge loop of a face (hole, boss, planar circular face, end of a cylinder) → its centre and normal.

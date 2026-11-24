@@ -59,3 +59,60 @@ export function diagonal(meshes) {
 }
 export const triCounts = meshes => meshes.map(m => m.index.array.length / 3);
 export const fmtK = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e3) + 'k';
+
+// ---------- per-body budgets (0.2.0, from the NX STEP diagnosis) ----------
+// One large filleted body used to coarsen every body in the file (×158 on a 9-body NX file: its smallest part
+// got 0.25 mm deflection and a ~1e-3 volume error). Now each body gets its own deflection from its
+// OWN bbox diagonal and its own coarsening scale (powers of 2) so that only bodies over `perBody` are coarsened;
+// if the total is still over budget, the biggest body is coarsened further. Bodies with similar settings share
+// a tessellation pass (occt-import-js meshes a whole representation per call; the import feeds it a STEP subset
+// per group). Deflections snap up to powers of √2 and at most GROUPS groups are kept by merging neighbours
+// into the coarser setting (never finer, so the budget still holds).
+export const GROUPS = 3;
+const snapUp = d => 2 ** (Math.ceil(2 * Math.log2(d) - 1e-9) / 2);
+export const groupParams = (d, a, pass, L = LIMITS) => pass === 2
+  ? { linearDeflectionType: 'absolute_value', linearDeflection: d / L.refine, angularDeflection: a / Math.sqrt(L.refine) }
+  : { linearDeflectionType: 'absolute_value', linearDeflection: d, angularDeflection: a };
+// Triangle prediction per body: the 0.1.x model T ≈ T0·f with f = max(d0/d, (θ0/θ)²) is very conservative at
+// fine settings (×20 on a small planar-heavy body). With a second probe at PROBE2 (f = 4) each body gets its own
+// growth exponent α = log(T2/T1)/log 4, clamped to [ALPHA_MIN, 1], and T ≈ T2·(f/4)^α.
+export const PROBE2 = { linearDeflectionType: 'bounding_box_ratio', linearDeflection: PROBE.linearDeflection / 4, angularDeflection: PROBE.angularDeflection / 2 };
+export const ALPHA_MIN = 0.6;
+export const alphaOf = (t1, t2) => Math.min(1, Math.max(ALPHA_MIN, Math.log(Math.max(t2, 1) / Math.max(t1, 1)) / Math.log(4)));
+export function predict2(t1, t2, D, p) {
+  const f = Math.max(PROBE.linearDeflection * D / Math.sqrt(3) / p.linearDeflection, (PROBE.angularDeflection / p.angularDeflection) ** 2, 1);
+  return f <= 4 ? t1 * f ** alphaOf(t1, t2) : t2 * (f / 4) ** alphaOf(t1, t2);
+}
+export function planPerBody(probeTris, diags, D, mode, L = LIMITS, maxGroups = GROUPS, probe2Tris = null) {
+  const k = mode === 'accurate' ? L.refine : 1, warn = [], note = [];
+  const par = (i, s) => { const p = passParams(diags[i], mode, s, 1, L); return { d: snapUp(p.linearDeflection), a: p.angularDeflection }; };
+  const pred = (i, s) => { const p = par(i, s), g = groupParams(p.d, p.a, 1, L); return (probe2Tris ? predict2(probeTris[i], probe2Tris[i], D, g) : predict([probeTris[i]], D, g)[0]) * k; };
+  const s = probeTris.map(() => 1);
+  let capped = false;
+  for (let i = 0; i < s.length; i++) for (let n = 0; n < 60 && pred(i, s[i]) > L.perBody; n++) {
+    const before = pred(i, s[i]); s[i] *= 2; if (!(pred(i, s[i]) < before)) { capped = true; break; }
+  }
+  for (let n = 0; n < 400; n++) {
+    const t = s.map((x, i) => pred(i, x)); if (t.reduce((a, b) => a + b, 0) <= L.total) break;
+    const j = t.indexOf(Math.max(...t)), before = t[j]; s[j] *= 2; if (!(pred(j, s[j]) < before)) { capped = true; break; }
+  }
+  if (capped) warn.push('coarsest mesh settings reached and the predicted size still exceeds the triangle budget');
+  // groups of identical settings, sorted fine → coarse, merged to ≤ maxGroups
+  const map = new Map();
+  s.forEach((x, i) => { const p = par(i, x), key = `${p.d}|${p.a}`; if (!map.has(key)) map.set(key, { d: p.d, a: p.a, bodies: [] }); map.get(key).bodies.push(i); });
+  let groups = [...map.values()].sort((x, y) => x.d - y.d || x.a - y.a);
+  while (groups.length > maxGroups) {
+    let best = 0, r = 1 / 0;
+    for (let i = 0; i + 1 < groups.length; i++) { const q = (groups[i + 1].d / groups[i].d) * (groups[i + 1].a / groups[i].a); if (q < r) { r = q; best = i; } }
+    const a = groups[best], b = groups[best + 1];
+    groups.splice(best, 2, { d: Math.max(a.d, b.d), a: Math.max(a.a, b.a), bodies: [...a.bodies, ...b.bodies].sort((x, y) => x - y) });
+  }
+  const coarsened = s.map(x => x > 1), nC = coarsened.filter(Boolean).length;
+  if (nC) note.push(`${nC} of ${s.length} bod${nC === 1 ? 'y' : 'ies'} coarsened (×${Math.max(...s)} max) to stay within ${fmtK(L.perBody)} triangles per body / ${fmtK(L.total)} total; the other bodies keep their own fine mesh`);
+  return { scale: s, coarsened, warn, note, refine: mode === 'accurate',
+    groups: groups.map(g => ({ bodies: g.bodies, base: groupParams(g.d, g.a, 1, L), fine: mode === 'accurate' ? groupParams(g.d, g.a, 2, L) : null })) };
+}
+export function bboxes(meshes) {
+  return meshes.map(m => { const p = m.attributes.position.array, lo = [1 / 0, 1 / 0, 1 / 0], hi = [-1 / 0, -1 / 0, -1 / 0];
+    for (let i = 0; i < p.length; i++) { const k = i % 3; if (p[i] < lo[k]) lo[k] = p[i]; if (p[i] > hi[k]) hi[k] = p[i]; } return [...lo, ...hi]; });
+}

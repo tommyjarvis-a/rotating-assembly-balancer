@@ -14,7 +14,8 @@ export function createView(el) {
   const ctl = new OrbitControls(cam, ren.domElement);
   scene.add(new HemisphereLight(0xffffff, 0x8899aa, 2.2)); const sun = new DirectionalLight(0xffffff, 1.6); sun.position.set(1, -1, 2); scene.add(sun);
   const bodies = new Group(), tools = new Group(), marks = new Group(), picks = new Group(), cgGrp = new Group(), originGrp = new Group(), cgLine = new Group();
-  const overlay = new Scene(); scene.add(bodies, tools, marks, picks); overlay.add(cgGrp, originGrp, cgLine);
+  const pinGrp = new Group(), outGrp = new Group();
+  const overlay = new Scene(); scene.add(bodies, tools, marks, picks, pinGrp, outGrp); overlay.add(cgGrp, originGrp, cgLine);
   const triad = makeTriad(), tcam = new OrthographicCamera(-1.45, 1.45, 1.45, -1.45, 0.1, 10);
   let mq;
   const resize = () => { // also on devicePixelRatio changes (browser zoom, moving to another screen) so both passes stay crisp
@@ -53,7 +54,8 @@ export function createView(el) {
   const ray = new Raycaster(); let down = null, onClick = () => { }, sel = new Set();
   const pick = (x, y) => {
     const r = ren.domElement.getBoundingClientRect(); ray.setFromCamera(new Vector2((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1), cam);
-    const h = ray.intersectObjects(bodies.children.filter(m => m.visible), false)[0];
+    // 0.2.0: the see-through Boundary ghost does not block picks on the bodies inside it
+    const hits = ray.intersectObjects(bodies.children.filter(m => m.visible), false), h = hits.find(x => roles[bodies.children.indexOf(x.object)] !== 'boundary') || hits[0];
     return h ? { body: bodies.children.indexOf(h.object), tri: h.faceIndex, point: h.point.toArray() } : null;
   };
   ren.domElement.addEventListener('pointerdown', e => { down = e.button === 0 ? [e.clientX, e.clientY] : null; });
@@ -61,7 +63,15 @@ export function createView(el) {
     if (!down || e.button !== 0) return; const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
     if (moved <= CLICK_PX) onClick(pick(e.clientX, e.clientY), e);
   });
-  const paint = () => bodies.children.forEach((m, i) => { const on = sel.has(i); m.material.emissive.setHex(on ? 0x1f5fd6 : 0); m.material.emissiveIntensity = on ? 0.55 : 1; m.material.opacity = on ? 1 : 0.85; });
+  // 0.2.0 roles: hub tinted blue-green, boundary a see-through ghost, existing counterweight orange, ignore faded
+  let roles = [];
+  const ROLE_LOOK = { hub: { color: 0x3a8f8a, opacity: 0.9 }, boundary: { color: 0x7fa7d9, opacity: 0.16 }, cw: { color: 0xe8902a, opacity: 0.95 }, ignore: { color: 0xb8bec8, opacity: 0.35 } };
+  const paint = () => bodies.children.forEach((m, i) => {
+    const on = sel.has(i), look = ROLE_LOOK[roles[i]];
+    m.material.color.setHex(look ? look.color : m.userData.color); m.material.depthWrite = roles[i] !== 'boundary';
+    m.material.emissive.setHex(on ? 0x1f5fd6 : 0); m.material.emissiveIntensity = on ? 0.55 : 1;
+    m.material.opacity = look ? (on ? Math.max(look.opacity, 0.35) : look.opacity) : on ? 1 : 0.85;
+  });
   let size = 100;
   return {
     setBodies(list) {
@@ -71,7 +81,7 @@ export function createView(el) {
         if (b.nrm) g.setAttribute('normal', new BufferAttribute(b.nrm instanceof Float32Array ? b.nrm : new Float32Array(b.nrm), 3)); else g.computeVertexNormals();
         g.setIndex(new BufferAttribute(b.idx instanceof Uint32Array ? b.idx : new Uint32Array(b.idx), 1));
         const m = new Mesh(g, new MeshStandardMaterial({ color: b.color || 0x9aa4b2, metalness: 0.3, roughness: 0.6, transparent: true, opacity: 0.85 }));
-        m.visible = b.on; bodies.add(m);
+        m.userData.color = b.color || 0x9aa4b2; m.visible = b.on; bodies.add(m);
       }
       sel = new Set(); paint();
     },
@@ -96,10 +106,14 @@ export function createView(el) {
       const s = size, Rt = v => new Vector3(fr.R[0] * v[0] + fr.R[3] * v[1] + fr.R[6] * v[2], fr.R[1] * v[0] + fr.R[4] * v[1] + fr.R[7] * v[2], fr.R[2] * v[0] + fr.R[5] * v[1] + fr.R[8] * v[2]);
       const at = z => Rt([0, 0, z]).add(new Vector3(...fr.o));
       const z0 = Math.min(span[0], 0) - s * 0.15, z1 = Math.max(span[1], 0) + s * 0.15;
-      // spin axis through its point: line over the span, arrow head along +w, dot at the axis point
+      // spin axis through its point (0.2.0: drawn through the whole model): line + thin cylinder over the span
+      // (+15 % of the model size each side), arrow head along +w, ringed marker at the axis point
       marks.add(new Line(new BufferGeometry().setFromPoints([at(z0), at(z1)]), new LineBasicMaterial({ color: 0x1d2330 })));
-      const head = new ArrowHelper(Rt([0, 0, 1]), at(z1 - s * 0.06), s * 0.06, 0x1d2330, s * 0.06, s * 0.025); marks.add(head);
-      const dot = new Mesh(new SphereGeometry(s * 0.008, 12, 8), new MeshBasicMaterial({ color: 0x1d2330, depthTest: false })); dot.position.copy(at(0)); dot.renderOrder = 9; marks.add(dot);
+      const rod = new Mesh(new CylinderGeometry(s * 0.0025, s * 0.0025, z1 - z0, 10), new MeshBasicMaterial({ color: 0x1d6fd6, transparent: true, opacity: 0.9, depthTest: false }));
+      rod.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), Rt([0, 0, 1]).normalize()); rod.position.copy(at((z0 + z1) / 2)); rod.renderOrder = 8; rod.name = 'axis-rod'; marks.add(rod);
+      const head = new ArrowHelper(Rt([0, 0, 1]), at(z1 - s * 0.06), s * 0.08, 0x1d6fd6, s * 0.06, s * 0.03); head.traverse(o => { if (o.material) o.material.depthTest = false; o.renderOrder = 9; }); head.name = 'axis-arrow'; marks.add(head);
+      const dot = new Mesh(new SphereGeometry(s * 0.01, 14, 10), new MeshBasicMaterial({ color: 0x1d6fd6, depthTest: false })); dot.position.copy(at(0)); dot.renderOrder = 9; dot.name = 'axis-point'; marks.add(dot);
+      const ring = new Mesh(new SphereGeometry(s * 0.016, 14, 10), new MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.6 })); ring.position.copy(at(0)); ring.renderOrder = 8; marks.add(ring);
       if (!r || !r.m) return;
       const ball = new Mesh(new SphereGeometry(s * 0.012, 16, 12), new MeshBasicMaterial({ color: 0xd0343c, depthTest: false })); ball.position.set(...com); ball.renderOrder = 9; marks.add(ball);
       const arrow = (v, z, col, mag, ref) => { if (!(mag > ref)) return; const d = Rt([v[0], v[1], 0]).normalize(), a = new ArrowHelper(d, at(z), s * (0.12 + 0.18 * Math.min(1, Math.log10(1 + mag / ref) / 4)), col, s * 0.03, s * 0.015); a.traverse(o => { if (o.material) o.material.depthTest = false; o.renderOrder = 10; }); marks.add(a); };
@@ -107,6 +121,29 @@ export function createView(el) {
       arrow(r.U, r.zc, 0xd0343c, r.Umag, tiny);
       const half = (a1 - a0) / 2 || s / 4; arrow(r.C, r.zc + half, 0x2a62c9, r.Cmag, tiny * half); arrow(r.C.map(v => -v), r.zc - half, 0x2a62c9, r.Cmag, tiny * half);
     },
+    setRoles(list) { roles = list.slice(); paint(); },
+    roles: () => roles.slice(),
+    // drive pin: a line along the pin axis between world points a and b, plus a marker at a
+    setPin(a, b) {
+      clear(pinGrp); if (!a) return;
+      const A = new Vector3(...a), B = new Vector3(...b), L = A.distanceTo(B) || 1;
+      const ln = new Line(new BufferGeometry().setFromPoints([A, B]), new LineBasicMaterial({ color: 0x7a2bd6, depthTest: false })); ln.renderOrder = 12; pinGrp.add(ln);
+      const rod = new Mesh(new CylinderGeometry(size * 0.002, size * 0.002, L, 8), new MeshBasicMaterial({ color: 0x7a2bd6, depthTest: false, transparent: true, opacity: 0.9 }));
+      rod.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), B.clone().sub(A).normalize()); rod.position.copy(A).add(B).multiplyScalar(0.5); rod.renderOrder = 12; pinGrp.add(rod);
+      const m = new Mesh(new SphereGeometry(size * 0.009, 12, 8), new MeshBasicMaterial({ color: 0x7a2bd6, depthTest: false })); m.position.set(...a); m.renderOrder = 12; pinGrp.add(m);
+    },
+    hasPin: () => pinGrp.children.length > 0,
+    // check mode: small red markers at vertices found outside the boundary (flat xyz list, capped)
+    setOutside(flat) {
+      clear(outGrp); if (!flat || !flat.length) return;
+      const n = Math.min(flat.length / 3, 20000), h = size * 0.003, P = new Float32Array(n * 18), I = new Uint32Array(n * 24);
+      const off = [[h, 0, 0], [-h, 0, 0], [0, h, 0], [0, -h, 0], [0, 0, h], [0, 0, -h]], F = [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5];
+      for (let i = 0; i < n; i++) { for (let k = 0; k < 6; k++) for (let c = 0; c < 3; c++) P[18 * i + 3 * k + c] = flat[3 * i + c] + off[k][c]; for (let k = 0; k < 24; k++) I[24 * i + k] = 6 * i + F[k]; }
+      const g = new BufferGeometry(); g.setAttribute('position', new BufferAttribute(P, 3)); g.setIndex(new BufferAttribute(I, 1));
+      const m = new Mesh(g, new MeshBasicMaterial({ color: 0xff1030, depthTest: false })); m.renderOrder = 13; outGrp.add(m);
+    },
+    outsideCount: () => outGrp.children.length ? outGrp.children[0].geometry.attributes.position.count / 6 : 0,
+    axisDrawn: () => ['axis-rod', 'axis-arrow', 'axis-point'].every(n => marks.getObjectByName(n)),
     setPicks(points) { clear(picks); for (const p of points) { const m = new Mesh(new SphereGeometry(size * 0.007, 12, 8), new MeshBasicMaterial({ color: 0x7a2bd6, depthTest: false })); m.position.set(...p); m.renderOrder = 11; picks.add(m); } },
     showBody(i, on) { if (bodies.children[i]) bodies.children[i].visible = on; },
     select(idx) { sel = new Set(Array.isArray(idx) ? idx : idx >= 0 ? [idx] : []); paint(); },

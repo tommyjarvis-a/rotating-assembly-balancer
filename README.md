@@ -168,6 +168,9 @@ selection/density change, dashed line from the origin), typed axis
 (cylinder, circle edge, 2 points), the optimiser about a tilted axis and JSON/CSV export + session reload
 (including a current, a stale-after-density, a legacy and an other-file assembly-CG restore), on `test/fixtures/tilted-rotor.stp`.
 Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge).
+- `tools/ui-smoke-020.cjs` (0.2.0): roles, materials, axis point/vector tools, drive pin, orbiting load, static readout,
+  check mode with containment and Cancel, NX table copy, session round trip and an older session
+  (`python3 -m http.server 8765 & node tools/ui-smoke-020.cjs`).
 
 ## Size, dependencies, token/code efficiency
 
@@ -186,7 +189,44 @@ Both accept `BROWSERS=chromium,webkit,msedge` (msedge = installed Microsoft Edge
 - One small module per concern (`mass`, `imbalance`, `tools`, `nm`, `optimize`, `step-export`, `step-meta`, `fit`, `view`,
   `app`) to keep future edits and reviews cheap.
 
-## Limitations (0.1.8-alpha)
+## Counterweight setup (0.2.0-alpha.1, slice 1)
+
+- **Roles** (Role column of the body list): **Hub** (one; picking another moves it), **Boundary** (one; the added
+  counterweight must stay inside it, the hub is excluded from that region), **Counterweight (existing)** (any number,
+  check mode) and **Ignore**. Boundary and Ignore bodies are not material in the section-2 residuals.
+- **Materials**: per-body presets Steel 7.85 and tungsten heavy alloy 17.0 / 17.6 / 18.0 / 18.5 g/cc, or a custom
+  density (ρ column, kg/m³). *Added material* defaults to the hub's material; it is stored for the slice-2 generator.
+- **Spin axis** = point + vector. Vector: cylinder axis (also sets the point), circular edge, planar-face normal, two
+  points, X/Y/Z presets, a principal axis, or typed i/j/k (normalised once on commit; the boxes keep what you typed).
+  Point: pick on the model, snap to the CG of the selected bodies, or type X/Y/Z. Faces come from the B-rep face ids;
+  without them a smooth mesh region around the click is fitted.
+- **Static readout** (section 2b): hub |U| (g·mm) and angle, CG offset (perpendicular distance from the hub CG to the
+  axis line), orbiting load, hub + load, and the needed counterweight vector. Angles: 0° = +u, 90° = +v of the axis
+  frame (u = world X, v = world Y for a +Z axis), right-handed about the axis direction. With an RPM: ISO 1940
+  G = e·ω (mm/s, e = |U| / rotor mass), the nearest standard grade and the finest grade met.
+- **Drive pin**: pick its cylindrical face (axis fit). More than 0.5° off parallel → warning, projected parallel.
+  Orbit radius e and angle are shown; typed e / angle is the fallback. **Orbiting load**: a body (its volume × its
+  density, Ignore bodies allowed) or a typed mass, as a point mass at the pin.
+- **Check mode** (existing counterweights): contribution, residual, % corrected, over/under ratio (projection of the
+  counterweight on −(hub + load) ÷ |hub + load|), angle error, counterweight angle from the pin, ISO grade of the
+  residual (rotor = hub + counterweights), PASS / FAIL against a g·mm or G-grade tolerance, and *Check containment*
+  (worker with Cancel): ray-parity point-in-mesh on X/Y/Z rays with a majority vote, plus an edge-crossing test.
+  Vertices within 2 × the mesh deflection of the boundary count as inside (touching).
+- **Body table** for NX Measure Bodies: volume, mass, density, CG from the model origin and mesh ± per body;
+  *Copy table* puts tab-separated text with a header on the clipboard.
+
+## Limitations (0.2.0-alpha.1)
+
+- Slice 1 does not generate counterweight material yet (slice 2) or export it (slice 3). The solver API
+  (`correctionTarget` in `src/statics.js`) takes a list of correction planes (one = static; two-plane later) and an
+  `axialBand` constraint hook; no UI for either yet. The orbiting load is a point mass; it is not in the couple.
+- Per-body meshing needs a file without assembly structure (no NEXT_ASSEMBLY_USAGE_OCCURRENCE / MAPPED_ITEM) whose
+  solids map 1:1 onto meshes; otherwise the whole-file plan of 0.1.x is used. It adds a calibration probe and up to
+  three mesh groups, so large multi-body files take longer to import (a 9-body, 0.5M-triangle NX file: ~31 s in Chromium).
+- The per-body ± covers tessellation only. CAD edge-tolerance gaps (files declaring a loose modelling uncertainty,
+  e.g. 0.1 mm) can add a few 1e-4 of volume on small bodies at any mesh size; an info card says so.
+- Containment uses the meshes: a counterweight touching a curved boundary can sit up to the chordal deflection
+  outside; that is what the tolerance absorbs.
 
 - Very large assemblies are meshed coarser to fit the triangle budget (warning shown); a single OCCT call cannot be
   interrupted except by Cancel/timeout, which discards that file.

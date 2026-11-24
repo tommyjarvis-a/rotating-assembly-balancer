@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><b>Rotating Assembly Balancer</b> <small id="ver">0.1.8-alpha</small><span id="status">Drop STEP files to start</span></header>
+<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.1</small><span id="status">Drop STEP files to start</span></header>
 <main>
 <aside id="panel">
   <section>
@@ -19,17 +19,39 @@
     <div id="cards"></div>
     <div class="row"><label title="accurate = two tessellations + Richardson extrapolation">Mass props <select id="quality"><option value="accurate" selected>accurate (2-pass)</option><option value="fast">fast</option></select></label>
       <label>Default <select id="defrho"><option value="7850">Steel 7850</option><option value="2700">Aluminium 2700</option><option value="7200">Cast iron 7200</option><option value="8900">Copper 8900</option></select> kg/m³</label></div>
-    <table id="bodies" title="Click a row (or a body in the 3-D view) to select it; Ctrl/⌘-click to add or remove, Shift-click a range; Esc deselects"><thead><tr><th></th><th>Body</th><th>ρ kg/m³</th><th>Mass g</th></tr></thead><tbody></tbody></table>
+    <table id="bodies" title="Click a row (or a body in the 3-D view) to select it; Ctrl/⌘-click to add or remove, Shift-click a range; Esc deselects"><thead><tr><th></th><th>Body</th><th title="Balance role: Hub (one), Boundary (one), Counterweight (existing, any number), Ignore">Role</th><th>Material</th><th>ρ kg/m³</th><th>Mass g</th></tr></thead><tbody></tbody></table>
     <div class="row cgrow"><button id="calcg">Calculate CG</button><div id="cgout" class="hint">Select one or more bodies (Ctrl-click or Shift-click to add), then Calculate CG.</div></div>
   </section>
   <section>
     <h2>2 · Spin axis &amp; residuals</h2>
     <div class="row"><label>Axis <select id="axis"></select></label>
-      <span class="picks" title="Pick the spin axis in the 3-D view">Pick <button data-pick="cyl">cylinder</button><button data-pick="loop">circle edge</button><button data-pick="pts">2 points</button></span></div>
+      <span class="picks" title="Pick the spin axis in the 3-D view">Vector <button data-pick="cyl" title="Axis of a cylindrical face (also sets the point)">cylinder</button><button data-pick="loop" title="Normal through the centre of a circular edge (also sets the point)">circle edge</button><button data-pick="nrm" title="Normal of a planar face (keeps the point)">plane normal</button><button data-pick="pts" title="Line through two picked points">2 points</button></span></div>
+    <div class="row"><span class="picks" title="Set only the axis point">Point <button data-pick="pt" title="Click a spot on the model (keeps the direction)">pick on model</button><button id="ptcg" title="Snap the axis point to the CG of the selected bodies (keeps the direction)">CG of selection</button></span></div>
     <div class="row axin"><label title="A point on the spin axis (world mm); axial positions are measured from it">Point <input id="ox" type="number" value="0" step="any"><input id="oy" type="number" value="0" step="any"><input id="oz" type="number" value="0" step="any"></label>
       <label title="Axis direction (world). Applied as a unit vector; the boxes keep the values as typed.">Dir <input id="dx" type="number" value="0" step="any"><input id="dy" type="number" value="0" step="any"><input id="dz" type="number" value="1" step="any"> <span id="dhat" class="hint" title="Unit direction used for computation"></span></label></div>
     <div id="axmsg" class="hint"></div>
     <div id="resid" class="resid"></div>
+  </section>
+  <section id="balance">
+    <h2>2b · Hub static balance</h2>
+    <div class="row"><label title="Material of the counterweight the generator will add (slice 2); defaults to the hub's material">Added material <select id="added"></select></label><input id="addedrho" type="number" step="any" min="0" placeholder="kg/m³" hidden title="Custom density, kg/m³"> <span id="addedinfo" class="hint"></span></div>
+    <div class="row"><span class="picks">Drive pin <button data-pick="pin" title="Click the eccentric pin's cylindrical face">pick pin cylinder</button></span>
+      <label title="Orbit radius: perpendicular distance from the pin axis to the spin axis">e <input id="pine" type="number" step="any" min="0" placeholder="mm"> mm</label>
+      <label title="Pin angle in the spin-axis frame (0° = +u, 90° = +v)">∠ <input id="pinang" type="number" step="any" placeholder="°">°</label><button id="pinclear" title="Remove the pin">✕</button></div>
+    <div id="pinmsg" class="hint"></div>
+    <div class="row"><label title="Orbiting load (e.g. the orbiting scroll) as a point mass on the pin axis at radius e">Orbiting load <select id="load"></select></label><input id="loadmass" type="number" step="any" min="0" placeholder="g" hidden title="Typed load mass, g"></div>
+    <div class="row"><label title="Speed for the ISO 1940 balance grade (optional)">RPM <input id="rpm" type="number" step="any" min="0" placeholder="optional"></label>
+      <label title="Check-mode tolerance on the residual">Tolerance <input id="tolv" type="number" step="any" min="0" placeholder="optional"> <select id="tolk"><option value="gmm">g·mm</option><option value="G">ISO G grade</option></select></label></div>
+    <div id="statout" class="statout"></div>
+    <div id="checkout" class="statout"></div>
+    <div class="row"><button id="contain" title="Check that every existing counterweight body lies inside the Boundary (runs in a worker)">Check containment</button> <span id="containmsg" class="hint"></span></div>
+    <div id="cjob" class="card info" hidden><span id="cjobmsg"></span> <button id="ccancel">Cancel</button></div>
+  </section>
+  <section>
+    <h2>Body table (compare with NX Measure Bodies)</h2>
+    <div class="row"><button id="copytable" title="Copy as tab-separated text with a header row (pastes into Excel)">Copy table</button> <span id="copymsg" class="hint"></span></div>
+    <div class="scrollx"><table id="nxtable"></table></div>
+    <p class="hint">CG from the absolute model origin (0,0,0), not the axis frame. ± is the mesh (tessellation) uncertainty; "≥" marks a coarsened body whose estimate may be low.</p>
   </section>
   <section>
     <h2>3 · Correction tools</h2>

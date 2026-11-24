@@ -20,6 +20,16 @@ export const FIX = {
   ],
   // rotor-unbalanced-like assembly on a tilted axis (through O along w = rotMat(TILT)·z), for axis picking
   'tilted-rotor': tilted([['shaft', 'cylinder', { r: 6, h: 100 }, -25], ['rotor', 'cylinder', { r: 30, ri: 6, h: 40 }, 0], ['lump', 'sector', { ri: 20, ro: 30, a0: 30, sweep: 40, h: 4 }, 40]]),
+  // 0.2.0 scroll-compressor-like hub (axis world Z): off-centre hub, eccentric drive pin (e 6 mm at 90°), orbiting
+  // scroll disk on the pin, a boundary cylinder, an existing counterweight sector near 215°, and one sticking out.
+  'scroll-hub': [
+    makeTool('cylinder', { name: 'hub', r: 30, h: 20, x: 1.5, rho: 7850 }),
+    makeTool('cylinder', { name: 'pin', r: 4, h: 15, y: 6, z: 20, rho: 7850 }),
+    makeTool('cylinder', { name: 'scroll', r: 25, h: 5, y: 6, z: 40, rho: 7850 }),
+    makeTool('cylinder', { name: 'boundary', r: 45, h: 40, z: -10, rho: 7850 }),
+    makeTool('sector', { name: 'cw', ri: 31, ro: 40, a0: 190, sweep: 50, h: 10, rho: 7850 }),
+    makeTool('sector', { name: 'cw_out', ri: 41, ro: 50, a0: 0, sweep: 20, h: 5, rho: 7850 }),
+  ],
   // Multi-body CG fixture: steel block, offset Al boss, and a REMOVE_slot cut from the block.
   'cg-assembly': [
     makeTool('prism', { name: 'block', pts: [[0, 0], [40, 0], [40, 20], [0, 20]], h: 10, rho: 7850 }),

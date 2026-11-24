@@ -1,31 +1,46 @@
 import { meshMoments, richardson, derive, scale, meshCheck } from './mass.js';
+import { normalizeRoles } from './roles.js';
 // Turn occt-import-js results (one per tessellation pass, finest last) into body records.
 // Density: a STEP record whose product name matches the body wins (src 'STEP'). A file-wide value is
 // used only when no record matches any body and the file holds a single distinct density
 // (src 'STEP (file)'); otherwise the body gets the default (src 'default').
 // Solids named REMOVE_* (removal tools written by this app's STEP export) get sign −1: negative mass.
-// Uncertainty: two passes → |fine − Richardson|; one pass with a coarse probe → error ∝ 1/triangles, so
-// |base − probe| / (N_base/N_probe − 1) (rough, used for fast mode and the L5 accuracy note).
-export function buildBodies(passes, dens, defRho, fileName = '', probe = null) {
+// Uncertainty (0.2.0, honest): two passes → max(|fine − Richardson|, |fine − coarse|) (the pass-to-pass change,
+// so it is not under-reported when the passes are not yet in the asymptotic range); one pass with a coarse
+// probe → error ∝ 1/triangles, so |base − probe| / (N_base/N_probe − 1) (rough). A body whose mesh had to be
+// coarsened gets unc.low = true: the estimate may still be low, shown as "≥".
+export function buildBodies(passes, dens, defRho, fileName = '', probe = null, opts = {}) {
   const res = passes.at(-1), two = passes.length === 2 && passes[0].meshes.length === res.meshes.length;
   const one = !two && probe?.meshes.length === res.meshes.length;
-  const names = new Set(res.meshes.map(m => m.name)), matched = dens.some(d => names.has(d.product));
+  return buildEntries(res.meshes.map((m, i) => ({ mesh: m, coarse: two ? passes[0].meshes[i] : null, probe: one ? probe.meshes[i] : null,
+    low: !!opts.coarsened?.[i], solidName: opts.solidNames?.[i] })), dens, defRho, fileName, opts);
+}
+// entries: [{ mesh (finest), coarse?, probe?, low?, solidName? }] in body order.
+// Display name: the STEP solid (MANIFOLD_SOLID_BREP) name, else the product name, else "Body n" when the
+// file has several solids, else the file name. Density matching always uses the product name.
+export function buildEntries(entries, dens, defRho, fileName = '', opts = {}) {
+  const names = new Set(entries.map(e => e.mesh.name)), matched = dens.some(d => names.has(d.product));
   const file1 = !matched && dens.length && new Set(dens.map(d => d.density)).size === 1 ? dens[0] : null;
-  const list = res.meshes.map((m, i) => {
-    const pos = m.attributes.position.array, idx = m.index.array, fine = meshMoments(pos, idx);
+  const many = entries.length > 1 && opts.solidNames, prodOf = e => e.product ?? e.mesh.name ?? '';
+  const prodCount = new Map(); for (const e of entries) prodCount.set(prodOf(e), (prodCount.get(prodOf(e)) || 0) + 1);
+  const list = entries.map((e, i) => {
+    const m = { ...e.mesh, name: prodOf(e) }, pos = m.attributes.position.array, idx = m.index.array, fine = meshMoments(pos, idx);
     let vol = fine, unc = null;
-    if (two) { // extrapolate and keep |fine − extrapolated| as the tessellation uncertainty estimate
-      const c = passes[0].meshes[i]; vol = richardson(meshMoments(c.attributes.position.array, c.index.array), fine);
-      const a = derive(vol), b = derive(fine); unc = { dV: Math.abs(b.m - a.m) / Math.abs(a.m), dc: Math.hypot(...b.c.map((v, k) => v - a.c[k])) };
-    } else if (one) {
-      const c = probe.meshes[i], k = Math.max(1, idx.length / c.index.array.length - 1), a = derive(fine), b = derive(meshMoments(c.attributes.position.array, c.index.array));
-      unc = { dV: Math.abs(b.m - a.m) / Math.abs(a.m) / k, dc: Math.hypot(...b.c.map((v, j) => v - a.c[j])) / k, rough: true };
+    const delta = (x, y) => { const a = derive(x), b = derive(y); return { dV: Math.abs(b.m - a.m) / Math.abs(a.m), dc: Math.hypot(...b.c.map((v, k) => v - a.c[k])) }; };
+    if (e.coarse) {
+      const c = meshMoments(e.coarse.attributes.position.array, e.coarse.index.array); vol = richardson(c, fine);
+      const r = delta(vol, fine), p = delta(c, fine); unc = { dV: Math.max(r.dV, p.dV), dc: Math.max(r.dc, p.dc) };
+    } else if (e.probe) {
+      const c = e.probe, k = Math.max(1, idx.length / c.index.array.length - 1), d = delta(fine, meshMoments(c.attributes.position.array, c.index.array));
+      unc = { dV: d.dV / k, dc: d.dc / k, rough: true };
     }
+    if (unc && e.low) unc.low = true;
     if (vol.m < 0) vol = scale(vol, -1);
     const own = dens.find(x => x.product === m.name), d = own || file1;
-    return { name: m.name || fileName, file: fileName, sign: /^REMOVE_/.test(m.name || '') ? -1 : 1, vol, unc, rho: d ? Math.round(d.density * 1000) / 1000 : defRho, src: own ? 'STEP' : d ? 'STEP (file)' : 'default',
+    const sn = e.solidName || '', name = sn || (m.name && !(many && prodCount.get(m.name) > 1) ? m.name : many ? `Body ${i + 1}` : m.name || fileName);
+    return { name, stepName: sn || m.name || '', product: m.name || '', file: fileName, sign: /^REMOVE_/.test(sn || m.name || '') ? -1 : 1, vol, unc, rho: d ? Math.round(d.density * 1000) / 1000 : defRho, src: own ? 'STEP' : d ? 'STEP (file)' : 'default',
       material: d?.material ?? null, on: true, pos, idx, nrm: m.attributes.normal?.array, faces: (m.brep_faces || []).flatMap(f => [f.first, f.last]), ...meshCheck(pos, idx, fine.m),
-      color: m.color && (m.color[0] * 255 << 16 | m.color[1] * 255 << 8 | m.color[2] * 255) };
+      color: m.color && (m.color[0] * 255 << 16 | m.color[1] * 255 << 8 | m.color[2] * 255), mesh: e.meshInfo || null };
   });
   // L7: suffix duplicate display names (e.g. test.stp #1…#n). Density matching above used the STEP product name.
   return uniqueNames(list);
@@ -169,10 +184,16 @@ export function restoreSession(session, current) {
   const densMatch = matchBodies(session.bodies || [], current);
   for (let si = 0; si < densMatch.map.length; si++) {
     const ci = densMatch.map[si], b = (session.bodies || [])[si];
-    if (ci >= 0 && b) Object.assign(current[ci], { rho: b.rho, src: b.src, on: b.on });
+    if (ci >= 0 && b) {
+      Object.assign(current[ci], { rho: b.rho, src: b.src, on: b.on });
+      // 0.2.0: role and material (older sessions have neither: role stays '' and the material follows rho)
+      if (typeof b.role === 'string') current[ci].role = b.role;
+      if (typeof b.mat === 'string') current[ci].mat = b.mat;
+    }
   }
+  const roleNotes = normalizeRoles(current);
   const j = session.assemblyCG;
-  if (!j || !Array.isArray(j.c)) return { densMatch, sels: [], cg: null, exported: undefined };
+  if (!j || !Array.isArray(j.c)) return { densMatch, roleNotes, sels: [], cg: null, exported: undefined };
   const cgMatch = matchBodies((j.bodies || []).map(asSaved), current);
   const rest = restoreCG(cgMatch, j, { saved: Array.isArray(session.bodies) ? session.bodies.length : undefined, current: current.length, sessionStale: densMatch.stale, sessionNotice: densMatch.notice });
   const sels = rest.sels, key = cgKey(sels, current), names = sels.map(i => current[i].name);
@@ -180,5 +201,5 @@ export function restoreSession(session, current) {
     ? { c: rest.c, m: rest.m, n: sels.length, names, indices: sels, key, stale: rest.stale, dropped: false, notice: rest.notice }
     : { dropped: true, stale: true, notice: rest.notice, key, names, indices: sels, c: null, m: null };
   const after = holdStale(cg, key);
-  return { densMatch, cgMatch, rest, sels, cg: after, exported: exportAssemblyCG(after, current, sels) };
+  return { densMatch, roleNotes, cgMatch, rest, sels, cg: after, exported: exportAssemblyCG(after, current, sels) };
 }

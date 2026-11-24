@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.2.0-alpha.1 — 2026-11-24 (alpha)
+
+Slice 1 of the counterweight generator: set-up, static readout and check mode. No material is generated yet.
+- **Body roles**: Hub (exactly one), Boundary (exactly one, not a union), Counterweight (existing; one or more) and
+  Ignore, with list badges / row markers and 3-D looks (hub teal, boundary see-through ghost that does not block
+  picks, counterweight orange, ignore faded). Picking a new Hub or Boundary clears the old one. No keep-out role in
+  v0.2.0. Boundary and Ignore bodies are left out of the section-2 residuals.
+- **Materials**: Steel 7.85 and tungsten heavy alloy 17.0 / 17.6 / 18.0 / 18.5 g/cc presets per body, custom density;
+  *Added material* (defaults to the hub's, stored for slice 2).
+- **Spin axis as point + vector**, reusing the 0.1.x axis tools (typed point / direction with the M2 commit rule,
+  cylinder, circular edge, two points, presets) plus a planar-face normal, a point picked on the model and a point
+  snapped to the CG of the selection. Cylinder fits fall back to a mesh-region fit without B-rep face ids. The axis
+  is drawn as a rod through the model with an arrow and a point marker.
+- **Static readout**: hub |U| g·mm and angle (frame and zero reference shown), CG offset = perpendicular distance
+  from the CG to the axis line, optional RPM → ISO 1940 G (achieved, nearest, finest met).
+- **Drive pin** pick (cylinder-axis fit; > 0.5° off parallel warns and is projected parallel), orbit radius e and
+  angle, typed fallback. **Orbiting load** at the pin from a body (Ignore allowed) or a typed mass; readout shows hub,
+  load, total and the needed counterweight vector.
+- **Check mode**: counterweight contribution, residual, % corrected, ISO grade of the residual, PASS / FAIL against a
+  g·mm or G-grade tolerance, counterweight angle from the pin, over / under ratio with colour, separate angle-error
+  flag, and a containment check in a worker with Cancel (ray-parity point-in-mesh, majority of X/Y/Z rays with a
+  top-left tie rule for edge hits, plus an edge-crossing test); outside vertices are marked red.
+- **Solver API hook** for slices 2+: `correctionTarget({ parts, points, axis, planes, constraints: { axialBand } })`.
+- **Mesh accuracy (held fix from the NX STEP diagnosis)**: per-body mesh budgets (each body's deflection from its own
+  size; only bodies over the per-body budget are coarsened; STEP subsets per mesh group), a calibration probe for the
+  triangle prediction, honest uncertainty (max of the Richardson and pass-to-pass change; coarsened bodies flagged
+  "≥"), an info card for a loose declared modelling uncertainty, and body names from `MANIFOLD_SOLID_BREP`
+  (else "Body n"). The import worker and its Cancel button are unchanged.
+- **Body table** for NX Measure Bodies (volume 0.001 mm³, CG 0.0001 mm from the model origin, density g/cc, mesh ±)
+  with *Copy table* (TSV with header).
+- Sessions save roles, materials, the added material, pin, load, RPM and tolerance; 0.1.x sessions still load.
+- Faceted STEP (FACETED_BREP with planar FACE_SURFACE + POLY_LOOP) re-imports exactly (new fixture), for the slice-3
+  export. A FACE (not FACE_SURFACE) with POLY_LOOP imports no body, and AP242 TESSELLATED_SOLID does not read in the
+  vendored occt-import-js.
+- Tests: 66 Node tests (64 pass, 2 optional OCP checks skipped) incl. roles, materials, line distance, direction
+  normalisation, static imbalance, ISO grades, cylinder fit, pin e / angle, orbiting load, check mode, containment,
+  per-body budgets, names and sessions; `tools/ui-smoke-020.cjs` (Playwright, 36 checks).
+
+
 ## 0.1.8-alpha — 2026-11-13
 
 - **Fix (High, H3):** a session exported while the assembly CG was stale no longer restores that CG as current.
