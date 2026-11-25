@@ -24,7 +24,7 @@ const LONG_MAX = +(process.env.LONG_MAX || 100);
     const txt = s => p.evaluate(s => document.querySelector(s)?.textContent ?? null, s);
     try {
       await p.goto(url); await load(FIX);
-      check('version 0.2.0-alpha.5 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.5');
+      check('version 0.2.0-alpha.6 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.6');
       await role('hub', 'hub'); await role('boundary', 'boundary'); await role('scroll', 'ignore'); await role('pin', 'ignore');
       await commit('#pine', 6); await commit('#pinang', 90); await p.selectOption('#load', 'b' + await idx('scroll'));
       await p.evaluate(() => rab.view.renderLoop(false)); await lt();

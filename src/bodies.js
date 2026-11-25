@@ -17,6 +17,11 @@ export function buildBodies(passes, dens, defRho, fileName = '', probe = null, o
     low: !!opts.coarsened?.[i], solidName: opts.solidNames?.[i] })), dens, defRho, fileName, opts);
 }
 // entries: [{ mesh (finest), coarse?, probe?, low?, solidName? }] in body order.
+// Tessellation ± of a body from two meshes (0.2.0-alpha.6): relative volume change and the CG change as a VECTOR
+// (dcv), so the part of it perpendicular to the spin axis can be used for the imbalance U (statics.js momentUnc).
+export function delta(x, y, k = 1) { const a = derive(x), b = derive(y), v = b.c.map((q, j) => (q - a.c[j]) * k); return { dV: k * Math.abs(b.m - a.m) / Math.abs(a.m), dc: Math.hypot(...v), dcv: v }; }
+// Richardson pair (coarse, fine) → extrapolated vol: ± = max(|extrapolated − fine|, |coarse − fine|)
+export function meshUnc(coarse, fine, vol) { const r = delta(vol, fine), p = delta(coarse, fine); return { dV: Math.max(r.dV, p.dV), dc: Math.max(r.dc, p.dc), dcv: [r.dcv, p.dcv] }; }
 // Display name: the STEP solid (MANIFOLD_SOLID_BREP) name, else the product name, else "Body n" when the
 // file has several solids, else the file name. Density matching always uses the product name.
 export function buildEntries(entries, dens, defRho, fileName = '', opts = {}) {
@@ -27,13 +32,11 @@ export function buildEntries(entries, dens, defRho, fileName = '', opts = {}) {
   const list = entries.map((e, i) => {
     const m = { ...e.mesh, name: prodOf(e) }, pos = m.attributes.position.array, idx = m.index.array, fine = meshMoments(pos, idx);
     let vol = fine, unc = null;
-    const delta = (x, y) => { const a = derive(x), b = derive(y); return { dV: Math.abs(b.m - a.m) / Math.abs(a.m), dc: Math.hypot(...b.c.map((v, k) => v - a.c[k])) }; };
     if (e.coarse) {
-      const c = meshMoments(e.coarse.attributes.position.array, e.coarse.index.array); vol = richardson(c, fine);
-      const r = delta(vol, fine), p = delta(c, fine); unc = { dV: Math.max(r.dV, p.dV), dc: Math.max(r.dc, p.dc) };
+      const c = meshMoments(e.coarse.attributes.position.array, e.coarse.index.array); vol = richardson(c, fine); unc = meshUnc(c, fine, vol);
     } else if (e.probe) {
-      const c = e.probe, k = Math.max(1, idx.length / c.index.array.length - 1), d = delta(fine, meshMoments(c.attributes.position.array, c.index.array));
-      unc = { dV: d.dV / k, dc: d.dc / k, rough: true };
+      const c = e.probe, k = Math.max(1, idx.length / c.index.array.length - 1), d = delta(fine, meshMoments(c.attributes.position.array, c.index.array), 1 / k);
+      unc = { dV: d.dV, dc: d.dc, dcv: [d.dcv], rough: true };
     }
     if (unc && e.low) unc.low = true;
     if (vol.m < 0) vol = scale(vol, -1);
@@ -55,8 +58,15 @@ export function buildEntries(entries, dens, defRho, fileName = '', opts = {}) {
 export const CAD_FLOOR = { minTol: 0.01, rel: 0.01, cg: 0.2 };
 export function applyCadFloor(bodies, fu) {
   if (!(fu >= CAD_FLOOR.minTol)) return bodies;
-  for (const b of bodies) { const u = b.unc || { dV: 0, dc: 0 }; b.unc = { ...u, dV: Math.max(u.dV, CAD_FLOOR.rel * fu), dc: Math.max(u.dc, CAD_FLOOR.cg * fu), low: true, cad: fu }; }
+  for (const b of bodies) b.unc = cadFloor(b.unc, fu);
   return bodies;
+}
+// 0.2.0-alpha.6: the floored ± keeps its tessellation part (mesh: dV, dc, dcv) and the floor values (cadDV, cadDc), so
+// the readout can say which one sets U. The floor is isotropic in CG (it is not reduced perpendicular to the axis).
+export function cadFloor(u0, fu) {
+  if (!(fu >= CAD_FLOOR.minTol)) return u0;
+  const u = u0 || { dV: 0, dc: 0 }, mesh = u.mesh || { dV: u.dV, dc: u.dc, dcv: u.dcv };
+  return { ...u, mesh, dV: Math.max(mesh.dV, CAD_FLOOR.rel * fu), dc: Math.max(mesh.dc, CAD_FLOOR.cg * fu), low: true, cad: fu, cadDV: CAD_FLOOR.rel * fu, cadDc: CAD_FLOOR.cg * fu };
 }
 export function uniqueNames(incoming, existing = []) {
   const taken = new Set(existing.map(b => b.name)), nIn = new Map();
@@ -87,7 +97,10 @@ export function bodyBBox(b) {
   return [...lo, ...hi];
 }
 export function bodyRef(b, i) {
-  return { index: i, name: b.name, file: b.file || '', vol: b.vol?.m ?? b.vol, bbox: bodyBBox(b), sign: b.sign };
+  return { index: i, name: b.name, file: b.file || '', vol: bodyVol0(b), bbox: bodyBBox(b), sign: b.sign };
+}
+// 0.2.0-alpha.6: the fingerprint uses the IMPORT volume, so a fine hub re-mesh (vol replaced) does not change it
+export function bodyVol0(b) { const v = b.importVol || b.vol; return v?.m ?? v;
 }
 export function inferredSign(entry) {
   if (entry == null) return;
@@ -105,7 +118,7 @@ export function asSaved(entry, i = 0) {
 }
 export function fingerprintMatch(saved, body) {
   if (saved?.sign != null && body.sign != null && saved.sign !== body.sign) return false;
-  const v0 = saved?.vol, v1 = body.vol?.m ?? body.vol;
+  const v0 = saved?.vol, v1 = bodyVol0(body);
   if (!(Number.isFinite(v0) && Number.isFinite(v1))) return false;
   if (Math.abs(v1 - v0) > FINGERPRINT.vol * Math.max(Math.abs(v0), Math.abs(v1), 1)) return false;
   const a = saved.bbox, b = bodyBBox(body);

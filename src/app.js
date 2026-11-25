@@ -1,5 +1,5 @@
 import { KGM3, add, scale, derive, eig3, zero, assemblyCG } from './mass.js';
-import { uniqueNames, bodyRef, restoreSession, exportAssemblyCG, cgKey as sessionKey, holdStale } from './bodies.js';
+import { uniqueNames, bodyBBox, bodyRef, restoreSession, exportAssemblyCG, cgKey as sessionKey, holdStale } from './bodies.js';
 import { frame, imbalance, twoPlane, axisNames } from './imbalance.js';
 import { makeTool, toolMoments, valid, eulerZYX, PARAMS, COMMON_PARAMS } from './tools.js';
 import { fitCylinder, fitLoop, faceOf, makeAxis, canon } from './fit.js';
@@ -8,7 +8,7 @@ import { toStep } from './step-export.js';
 import { createView } from './view.js';
 import { ROLES, roleOf, setRole, roleIndex, inResiduals, normalizeRoles } from './roles.js';
 import { MATERIALS, CUSTOM, materialId, materialName, applyMaterial, addedMaterial, gcc, validRho } from './materials.js';
-import { momentUnc, verdictU, movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
+import { momentUnc, momentUncParts, verdictU, movePin, staticOf, pinFromAxis, pinTyped, pinPoint, orbitU, isoReadout, checkBalance, vec, basis, bodyMoments, sumMoments, correctionTarget } from './statics.js';
 import { faceTris, fitCylinderTris, fitPlane } from './fit.js';
 import { BALANCE_DEFAULT, exportBalance, restoreBalance } from './balance-session.js';
 import { cleanTool } from './session-schema.js';
@@ -19,7 +19,7 @@ import { meshMoments } from './mass.js';
 import { safeName } from './mesh-export.js';
 import { GEN_SESSION_MAX, packGenerated, unpackGenerated, genDefaultTol } from './gen-session.js';
 
-const VERSION = '0.2.0-alpha.5', $ = s => document.querySelector(s);
+const VERSION = '0.2.0-alpha.6', $ = s => document.querySelector(s);
 // Without WebGL (blocked, no GPU and no software fallback) everything but the 3-D view still works.
 let view; try { view = createView($('#view')); } catch (e) {
   view = new Proxy({}, { get: () => () => null }); queueMicrotask(() => card('err', `<b>3-D view unavailable</b>: WebGL could not start (${esc(e.message)}). Mass properties, balancing and export still work; enable hardware acceleration in the browser settings for the view.`));
@@ -98,7 +98,8 @@ async function loadFiles(files) {
       let r;
       try { r = await runImport(f, await f.arrayBuffer()); }
       catch (e) { if (e.cancelled) { status(`${f.name}: import cancelled`); break; } card('err', `<b>Could not import ${esc(f.name)}</b>: ${esc(e.message)}`); status(`${f.name}: import failed`); continue; }
-      for (const b of r.bodies) { b.role = ''; b.mat = materialId(b.rho); }
+      // 0.2.0-alpha.6: keep the File and solid index (fine hub re-mesh) and the import mass properties (Fast, fingerprint)
+      r.bodies.forEach((b, i) => { b.role = ''; b.mat = materialId(b.rho); Object.assign(b, { uid: ++uidSeq, srcFile: f, solidIndex: i, fileCount: r.bodies.length, importVol: b.vol, importUnc: b.unc, importMesh: b.mesh }); });
       const g = st.bodies.findIndex(b => b.generated), gb = g >= 0 ? st.bodies.splice(g, 1)[0] : null; // the generated piece stays last
       uniqueNames(r.bodies, st.bodies); st.bodies.push(...r.bodies); if (gb) st.bodies.push(gb);
       for (const w of r.warn) card('warn', `${esc(f.name)}: ${esc(w)}`);
@@ -153,6 +154,7 @@ function span(fr) {
 }
 
 function update() {
+  hubMeshSync();
   if (st.axis.src[0] === 'P' && st.bodies[+st.axis.src.slice(1)]) { const a = principal(+st.axis.src.slice(1)); st.axis.p = a.p; st.axis.d = a.d; }
   const fr = axisFrame(), base = baseMom(), tot = add(base, toolsMom()), r0 = imbalance(base, fr), r1 = imbalance(tot, fr), sp = span(fr);
   const an = axisNames(fr), vec = a => `(${a.map(v => fmt(v, 3)).join(', ')})`;
@@ -174,7 +176,7 @@ function update() {
 }
 
 // ---------- UI ----------
-const srcText = b => `${b.sign < 0 ? 'removal (−m) · ' : ''}${esc(b.src)}${b.material ? ' · ' + esc(b.material) : ''} · V ${fmt(b.vol.m)} mm³${b.unc ? ` · ${b.unc.low ? '≥' : b.unc.rough ? '~' : ''}±${fmt(b.unc.dc * 1000, 2)} µm CoM` : ''}${b.mesh?.coarsened ? ' · coarsened mesh' : ''}`;
+const srcText = b => `${b.sign < 0 ? 'removal (−m) · ' : ''}${esc(b.src)}${b.material ? ' · ' + esc(b.material) : ''} · V ${fmt(b.vol.m)} mm³${b.unc ? ` · ${b.unc.low ? '≥' : b.unc.rough ? '~' : ''}±${fmt(b.unc.dc * 1000, 2)} µm CoM` : ''}${b.mesh?.fine ? ' · fine hub mesh' : b.mesh?.coarsened ? ' · coarsened mesh' : ''}`;
 const viewRoles = () => st.bodies.map(b => b.generated && roleOf(b) === 'cw' ? 'gen' : roleOf(b));
 const roleBadge = b => { const r = ROLES.find(x => x.id === roleOf(b)); return r?.short ? ` <span class="rb ${r.id}" title="${r.title}">${r.short}</span>` : ''; };
 const roleSel = (b, i) => `<select data-role="${i}" title="Balance role">${ROLES.map(r => `<option value="${r.id}" ${roleOf(b) === r.id ? 'selected' : ''} title="${r.title}">${r.label}</option>`).join('')}</select>`;
@@ -286,6 +288,7 @@ $('#panel').addEventListener('change', e => {
   }
   if (el.id === 'load') { const v = el.value; st.bal.load = v === 'none' ? { kind: 'none', body: -1, mass: null } : v === 'mass' ? { kind: 'mass', body: -1, mass: +$('#loadmass').value > 0 ? +$('#loadmass').value : null } : { kind: 'body', body: +v.slice(1), mass: null }; renderBalanceInputs(); return update(); }
   if (el.id === 'loadmass') { st.bal.load = { kind: 'mass', body: -1, mass: +el.value > 0 ? +el.value : null }; return update(); }
+  if (el.id === 'hubmesh') { st.bal.hubMesh = el.value === 'fast' ? 'fast' : 'fine'; return update(); }
   if (el.id === 'rpm') { st.bal.rpm = +el.value > 0 ? +el.value : null; return update(); }
   if (el.id === 'bandmode') { st.bal.band.mode = el.value; return update(); }
   if (el.id === 'bandt') { st.bal.band.thick = el.value.trim() === '' ? null : +el.value; return update(); }
@@ -320,6 +323,8 @@ $('#panel').addEventListener('click', e => {
   if (el.id === 'calcg') calcCG();
   if (el.id === 'cancel') job?.cancel();
   if (el.id === 'ccancel') cjob?.cancel();
+  if (el.id === 'hcancel') hjob?.cancel();
+  if (el.id === 'hubremesh') { const H = st.bodies[roleIndex(st.bodies).hub]; if (H) { H.fineState = ''; update(); } }
   if (el.id === 'contain') runContain();
   if (el.id === 'gen') runGen();
   if (el.id === 'gcancel') gjob?.cancel();
@@ -414,10 +419,55 @@ function renderBalanceInputs() {
   $('#load').innerHTML = '<option value="none">none</option><option value="mass">typed mass (g)</option>' + st.bodies.map((b, i) => roleOf(b) === 'hub' || roleOf(b) === 'boundary' || b.generated ? '' : `<option value="b${i}">${esc(b.name)}${roleOf(b) ? ' [' + ROLES.find(r => r.id === roleOf(b)).label + ']' : ''}</option>`).join('');
   $('#load').value = L.kind === 'body' ? 'b' + L.body : L.kind; if (!$('#load').value) { $('#load').value = 'none'; }
   $('#loadmass').hidden = L.kind !== 'mass'; if (L.kind === 'mass' && L.mass) $('#loadmass').value = L.mass;
+  $('#hubmesh').value = st.bal.hubMesh === 'fast' ? 'fast' : 'fine';
   if (st.bal.rpm) $('#rpm').value = st.bal.rpm; $('#tolk').value = st.bal.tol?.kind || 'gmm'; if (st.bal.tol?.value != null) $('#tolv').value = st.bal.tol.value;
 }
 const ang = a => { if (a == null) return '—'; const x = +(+a).toFixed(2); return (x >= 360 ? 0 : x).toFixed(2) + '°'; };
 const isoTxt = iso => iso ? `G ${fmt(iso.G, 3)} mm/s (e ${fmt(iso.e * 1000, 3)} µm) · nearest G${iso.nearest} · meets ${iso.meets ? 'G' + iso.meets : '— (above G4000)'}` : '<span class="hint">enter RPM for the ISO 1940 grade</span>';
+// ---------- 0.2.0-alpha.6: fine hub mesh (worker, progress, Cancel) ----------
+// Fine (default): when a body becomes the Hub, its solid is re-meshed on its own (src/hub-mesh.js) and its vol / ±
+// are replaced by the fine values (kept per body, so switching Fast ⇄ Fine is instant after the first run).
+// Fast: the import values. The display / contact geometry is always the import mesh.
+let hjob = null, uidSeq = 0;
+const HUB_TIMEOUT_S = 900;
+const hubmsg = (m, bad) => { $('#hubmeshmsg').textContent = m; $('#hubmeshmsg').className = 'hint' + (bad ? ' bad' : ''); };
+const fineable = b => b && b.srcFile && Number.isInteger(b.solidIndex) && !b.generated && !b.unc?.exact && !b.mesh?.stl;
+function useMass(b, fine) {
+  const v = fine && b.fine ? b.fine : { vol: b.importVol, unc: b.importUnc, mesh: b.importMesh };
+  if (v.vol && b.vol !== v.vol) { b.vol = v.vol; b.unc = v.unc; b.mesh = v.mesh; return true; }
+  return false;
+}
+function hubMeshSync() {
+  const hi = roleIndex(st.bodies), H = st.bodies[hi.hub], fine = st.bal.hubMesh !== 'fast';
+  if (hjob && (!fine || !H || H.uid !== hjob.uid)) hjob.cancel('superseded');
+  let ch = false; for (const b of st.bodies) if (b.importVol) ch = useMass(b, fine && b === H) || ch;
+  if (ch) queueMicrotask(renderBodies); // body table source / V / ± follow the hub mesh
+  $('#hubremesh').hidden = !(fine && fineable(H) && !H.fine && !hjob && H.fineState);
+  if (!H) return hubmsg('');
+  if (!fine) return hubmsg(fineable(H) ? 'Fast: the hub uses its import mesh' + (H.importMesh?.coarsened ? ` (coarsened ×${fmt(H.importMesh.scale, 3)})` : '') : '');
+  if (H.fine) return hubmsg(`fine mesh: ${(H.fine.mesh.tris / 1e3).toFixed(0)}k triangles, deflection ${fmt(H.fine.mesh.deflection, 3)} mm, 2 passes + Richardson (${(H.fine.ms / 1000).toFixed(1)} s)`);
+  if (!fineable(H)) return hubmsg(H.unc?.exact ? 'the hub mesh is exact (planar faceted)' : H.mesh?.stl ? '' : 'fine re-mesh needs the hub\'s STEP file in this page (import it again)');
+  if (hjob) return;
+  if (H.fineState) return hubmsg(H.fineState, true);
+  if (!busy) setTimeout(() => runHubMesh(H.uid), 0);
+}
+function runHubMesh(uid) {
+  const H = st.bodies.find(b => b.uid === uid); if (!H || hjob || busy || st.bal.hubMesh === 'fast' || roleOf(H) !== 'hub' || H.fine) return;
+  const w = new Worker(new URL('./hub-worker.js', import.meta.url), { type: 'module' }), t0 = performance.now(); let stage = 'starting', done = false;
+  const finish = () => { if (done) return; done = true; clearInterval(tick); w.terminate(); const q = hjob?.thenGen; hjob = null; $('#hjob').hidden = true; if (q) setTimeout(runGen, 0); };
+  const fail = m => { const b = st.bodies.find(x => x.uid === uid); if (b) b.fineState = m; finish(); update(); };
+  const tick = setInterval(() => { const s = (performance.now() - t0) / 1000; $('#hjobmsg').textContent = `${H.name}: ${stage}… ${s.toFixed(0)} s`; if (s > HUB_TIMEOUT_S) fail(`fine hub mesh timed out after ${HUB_TIMEOUT_S} s — using the import mesh; choose Fast for this file`); }, 250);
+  hjob = { uid, cancel: why => { if (why === 'superseded') { finish(); return; } fail('fine hub mesh cancelled — using the import mesh (Re-mesh hub finely to retry)'); } };
+  $('#hjob').hidden = false; $('#hjobmsg').textContent = `${H.name}: fine re-mesh starting…`; hubmsg('');
+  w.onmessage = ({ data: d }) => {
+    if (d.type === 'progress') stage = d.stage;
+    else if (d.type === 'error') fail('fine hub mesh failed: ' + d.message + ' — using the import mesh');
+    else if (d.type === 'done') { const b = st.bodies.find(x => x.uid === uid); if (b) { b.fine = { vol: d.vol, unc: d.unc, mesh: { ...b.importMesh, ...d.mesh }, ms: d.ms }; b.fineState = ''; } finish(); update(); }
+  };
+  w.onerror = e => { e.preventDefault?.(); fail('fine hub mesh worker failed (' + (e.message || 'out of memory?') + ') — using the import mesh; choose Fast for this file'); };
+  const expect = { bbox: bodyBBox(H), count: H.fileCount, mesh: H.importMesh && { deflection: H.importMesh.deflection, angular: H.importMesh.angular } };
+  Promise.all([H.srcFile.arrayBuffer(), compileWasm()]).then(([buf, wasm]) => { if (!done) w.postMessage({ buf, index: H.solidIndex, expect, wasm }, [buf]); }, e => fail('could not read the hub file: ' + e.message));
+}
 function balanceState() {
   const hi = roleIndex(st.bodies), hub = st.bodies[hi.hub];
   if (!hub) return { hi };
@@ -428,9 +478,10 @@ function balanceState() {
   const M = hubMom.m + (cws.length ? cwMom.m : 0);
   const band = bandNow(hub, pin), target = correctionTarget({ parts: [hubMom], points: [loadU], axis: ax, planes: [{}], constraints: { axialBand: band.w || null } });
   // M10: input uncertainty (g·mm) of hub + load and of the counterweights, from each body's mass-property ±
-  const uB = b => momentUnc(bmass(b), staticOf(bodyMoments(b), ax).mag, b.unc);
-  const uHub = uB(hub), uLoad = lb && pin ? Math.abs(lm) * pin.e * (lb.unc?.dV || 0) : 0, uCw = cws.reduce((a, i) => a + uB(st.bodies[i]), 0);
-  const unc = { hub: uHub, load: uLoad, base: uHub + uLoad, cw: uCw, total: uHub + uLoad + uCw };
+  // 0.2.0-alpha.6: only the tessellation CG change perpendicular to the axis direction counts; the CAD floor is isotropic
+  const uB = b => momentUnc(bmass(b), staticOf(bodyMoments(b), ax).mag, b.unc, ax.d), hubP = momentUncParts(bmass(hub), H.mag, hub.unc, ax.d);
+  const uHub = hubP.total, uLoad = lb && pin ? Math.abs(lm) * pin.e * (lb.unc?.dV || 0) : 0, uCw = cws.reduce((a, i) => a + uB(st.bodies[i]), 0);
+  const unc = { hub: uHub, hubMesh: hubP.mesh, hubFloor: hubP.floorSets ? hubP.floor : 0, cad: hub.unc?.cad, fineRunning: !!hjob, load: uLoad, base: uHub + uLoad, cw: uCw, total: uHub + uLoad + uCw };
   const check = cws.length ? checkBalance({ base, cw: cwS.U, M, rpm: st.bal.rpm, tol: st.bal.tol, pinAng: pin ? pin.ang : null, unc: unc.total }) : null;
   return { hi, hub, H, pin, lm, lb, loadU, base: vec(base), target, band, cws, cwS, check, M, unc, isoBase: isoReadout(Math.hypot(...base), hubMom.m, st.bal.rpm) };
 }
@@ -454,11 +505,11 @@ function renderBalance(fr, sp) {
   const ou = c.state ? `<span class="ou ${c.state}" id="ouflag">${c.state === 'over' ? 'OVER-balanced' : c.state === 'under' ? 'UNDER-balanced' : 'matched'} ×${fmt(c.ratio, 4)}</span>` : '—';
   const cOut = containFail(S.cws);
   const verdict = c.verdict == null ? (st.bal.tol?.kind === 'G' && st.bal.tol.value > 0 && !(st.bal.rpm > 0) ? '<span class="hint" id="needrpm">enter an RPM to grade against G' + esc(st.bal.tol.value) + '</span>' : '<span class="hint">set a tolerance (g·mm or G grade)</span>')
-    : verdictHtml(cOut ? 'fail' : c.verdict, c.resid.mag, c.unc, c.limit, 'verdict', cOut) + (st.bal.tol.kind === 'G' ? ` <span class="hint">(G${esc(st.bal.tol.value)} at ${esc(st.bal.rpm)} rpm, M ${fmt(S.M, 5)} g)</span>` : '');
+    : verdictHtml(cOut ? 'fail' : c.verdict, c.resid.mag, c.unc, c.limit, 'verdict', cOut, S.unc) + (st.bal.tol.kind === 'G' ? ` <span class="hint">(G${esc(st.bal.tol.value)} at ${esc(st.bal.rpm)} rpm, M ${fmt(S.M, 5)} g)</span>` : '');
   chk.innerHTML = `<h3 class="hint">Check mode — ${S.cws.length} existing counterweight bod${S.cws.length === 1 ? 'y' : 'ies'}</h3><table>
     ${row('Hub + load', fmt(c.base.mag, 5), ang(c.base.ang))}
     ${row('Counterweight', fmt(c.cw.mag, 5), ang(c.cw.ang), `m ${fmt(S.cwS.m, 5)} g${c.cwRelPin != null ? ` · ${fmt(c.cwRelPin, 2)}° from the pin` : ''}`)}
-    ${row('<b>Residual</b>', `<span id="resid0">${fmt(c.resid.mag, 5)}</span> <span id="residu">± ${fmt(c.unc, 3)}</span>`, ang(c.resid.ang), `corrected <b id="pctcorr">${pct}</b> · ± = input uncertainty (hub ${fmt(S.unc.hub, 3)}, load ${fmt(S.unc.load, 3)}, counterweights ${fmt(S.unc.cw, 3)} g·mm)`)}
+    ${row('<b>Residual</b>', `<span id="resid0">${fmt(c.resid.mag, 5)}</span> <span id="residu">± ${fmt(c.unc, 3)}</span>`, ang(c.resid.ang), `corrected <b id="pctcorr">${pct}</b> · ± = input uncertainty (hub ${hubUncTxt(S.unc)}, load ${fmt(S.unc.load, 3)}, counterweights ${fmt(S.unc.cw, 3)} g·mm)`)}
     </table>
     <div>Balance: ${ou} <span class="hint">(projection of the counterweight on −(hub+load) ÷ |hub+load|; &gt;1 over, &lt;1 under)</span></div>
     <div>Angle error ${c.angErr == null ? '—' : `<span class="${c.angFlag ? 'flag' : ''}" id="angerr">${fmt(c.angErr, 3)}°</span>`} · perpendicular ${c.perp == null ? '—' : fmt(100 * c.perp, 3) + ' % of |hub+load|'}${c.angFlag ? ' <span class="flag">⚠ large angle (perpendicular) error</span>' : ''}</div>
@@ -466,9 +517,12 @@ function renderBalance(fr, sp) {
     <div>${verdict}</div><div id="containres">${renderContain()}</div>`;
 }
 // M10: one verdict rendering for check mode and the generator. v: 'pass' | 'fail' | 'unresolved'.
-function verdictHtml(v, R, U, limit, id, contain = '') {
+const hubUncTxt = u => `${fmt(u.hub, 3)}${u.hubFloor ? ` <span id="hubfloor">[mesh ± ${fmt(u.hubMesh, 2)}; set by the CAD-tolerance floor]</span>` : ''}${u.fineRunning ? ' <span class="hint">(fine hub mesh running)</span>' : ''}`;
+// 0.2.0-alpha.6: when the hub's ± is set by the CAD-tolerance floor, say so (a finer mesh cannot lower it)
+const floorNote = u => u?.hubFloor ? ` The hub's ± is set by the CAD-tolerance floor (the file declares a ${fmt(u.cad, 3)} mm modelling uncertainty → ${fmt(u.hubFloor, 3)} g·mm); the hub mesh's own ± is ${fmt(u.hubMesh, 2)} g·mm, so a finer mesh cannot lower it — only a CAD file with a tighter modelling tolerance can.` : u?.fineRunning ? ' The fine hub mesh is still running; the ± will drop when it finishes.' : '';
+function verdictHtml(v, R, U, limit, id, contain = '', u = null) {
   const ru = `residual ${fmt(R, 5)} ± ${fmt(U, 3)} g·mm`;
-  if (v === 'unresolved') return `<span class="verdict unres" id="${id}">CAN'T RESOLVE</span> Can't resolve: ${ru} exceeds tolerance resolution (tol ${fmt(limit, 4)} g·mm). Use a finer mesh (accurate mass props, a CAD file with a tighter modelling tolerance) or a looser tolerance (≥ ${fmt(R + U, 4)} g·mm).`;
+  if (v === 'unresolved') return `<span class="verdict unres" id="${id}">CAN'T RESOLVE</span> Can't resolve: ${ru} exceeds tolerance resolution (tol ${fmt(limit, 4)} g·mm). Use a finer mesh (accurate mass props, a CAD file with a tighter modelling tolerance) or a looser tolerance (≥ ${fmt(R + U, 4)} g·mm).${floorNote(u)}`;
   const why = contain ? ` — <span class="flag">${esc(contain)}</span>` : v === 'pass' ? ` (|R| + U ≤ ${fmt(limit, 4)})` : ` (|R| − U > ${fmt(limit, 4)})`;
   return `<span class="verdict ${v === 'pass' ? 'pass' : 'fail'}" id="${id}">${v === 'pass' ? 'PASS' : 'FAIL'}</span> ${ru}${why}`;
 }
@@ -559,18 +613,21 @@ function renderGen(S, sp) {
   const ctn = v ? (v.pending ? null : v.contained) : r.contained ?? null, nOut = v && !v.pending ? v.nOut : r.outsideBoundary, nCross = v && !v.pending ? v.crossings : r.crossBoundary;
   const maxOut = v && !v.pending ? v.maxOut : r.maxOut, cTol = v && !v.pending ? v.tol : r.checkTol, hubN = v && !v.pending ? v.hubVertices : r.hubVertices, hubMin = v && !v.pending ? v.hubMin : r.hubGap;
   const touch = hubN > 0, why = ctn === false ? `outside the Boundary (${nOut} vertices outside, ${nCross ?? '?'} edges cross; max protrusion ${fmt(maxOut || 0, 3)} mm)` : !touch && ctn != null ? 'does not touch the hub' : '';
-  const vd = left ? verdictU(left.mag, U, tol) : null, verdictTxt = !left ? '' : ctn == null ? '<span class="hint" id="genverdict" data-v="pending">verifying containment…</span>' : verdictHtml(why ? 'fail' : vd, left.mag, U, tol, 'genverdict', why);
+  const vd = left ? verdictU(left.mag, U, tol) : null, verdictTxt = !left ? '' : ctn == null ? '<span class="hint" id="genverdict" data-v="pending">verifying containment…</span>' : verdictHtml(why ? 'fail' : vd, left.mag, U, tol, 'genverdict', why, S.unc);
   const cline = ctn == null ? '<span class="hint">containment: verifying…</span>' : ctn ? `<span class="verdict pass" id="gencontain">inside</span> the Boundary (Check-containment test, tol ${fmt(cTol, 3)} mm: ${esc(nOut)} vertices outside, ${esc(nCross ?? 0)} edges cross; measured max protrusion ${fmt(maxOut || 0, 3)} mm)`
     : `<span class="verdict fail" id="gencontain">outside</span> <span class="flag">the Boundary: ${esc(nOut)} vertices outside, ${esc(nCross ?? '?')} edges cross, measured max protrusion ${fmt(maxOut || 0, 3)} mm (tol ${fmt(cTol, 3)} mm) — marked red in the view</span>`;
-  const hline = hubN == null ? '' : touch ? `touches the hub (${esc(hubN)} vertices within ${fmt((v && !v.pending ? v.contactTol : r.contactTol) || 0, 3)} mm of the hub mesh; closest ${fmt(hubMin || 0, 3)} mm)` : `<span class="flag">does not touch the hub: closest ${hubMin == null ? '> 2 cells' : fmt(hubMin, 3) + ' mm'}</span>`;
+  // L16: "touches" only for a gap at the numerical level (≤ 0.001 cell); otherwise the L14 rule says "seated within the
+  // contact tolerance" and the measured gap is shown
+  const cT = (v && !v.pending ? v.contactTol : r.contactTol) || 0, cellNow = r.cell || st.bal.gen.cell || 1;
+  const hline = hubN == null ? '' : touch ? (hubMin <= 1e-3 * cellNow ? `<span id="genhub">touches the hub</span> (${esc(hubN)} vertices within ${fmt(cT, 3)} mm of the hub mesh; closest ${fmt(hubMin || 0, 3)} mm)` : `<span id="genhub">seated on the hub within the contact tolerance</span>: measured gap ${fmt(hubMin || 0, 3)} mm ≤ ${fmt(cT, 3)} mm (hub mesh deflection + margin, at most 0.1 cell; ${esc(hubN)} vertices within it) — not touching the hub mesh exactly`) : `<span class="flag">does not touch the hub: closest ${hubMin == null ? '> 2 cells' : fmt(hubMin, 3) + ' mm'}</span>`;
   el.innerHTML = `${stale ? '<p class="flag" id="genstale">⚠ inputs changed since generation (hub, boundary, axis, band, load, material, cell or tolerance) — regenerate</p>' : ''}
     <table><tr><td>Piece <i>${esc(g.name)}</i></td><td>mass <b id="genmass">${fmt(mom.m, 5)}</b> g</td><td>volume ${fmt(d.m, 6)} mm³</td></tr>
     <tr><td>CG (world)</td><td colspan="2">${d.c.map(v => fmt(v, 5)).join(', ')} mm · offset ${fmt(Sg.offset, 5)} mm</td></tr>
     <tr><td>m·r</td><td>${fmt(Sg.mag, 5)} g·mm at ${ang(Sg.ang)}</td><td>${rel != null ? `<b id="genrel">${fmt(rel, 2)}°</b> from the pin` : 'no pin'}</td></tr>
     <tr><td>Leftover (hub + load + piece)</td><td><span id="genleft">${left ? fmt(left.mag, 5) : '—'}</span> <span id="genleftu">± ${fmt(U, 3)}</span> g·mm${left ? ' at ' + ang(left.ang) : ''}</td><td>tol ${fmt(tol, 4)} g·mm</td></tr></table>
-    <div>${verdictTxt}</div>
+    <div>${verdictTxt}</div> ${r.goal === 'minimal' && !stale ? `<div class="hint" id="gengoal">The input uncertainty ± ${fmt(r.unc, 3)} g·mm is not below the tolerance ${fmt(r.tol, 4)} g·mm, so no piece can PASS; the generator minimised the leftover |R| instead (it stops at |R| + U ≤ tol when that is reachable).</div>` : ''}
     <div>${cline}</div>
-    <div class="hint">± = input uncertainty: hub ${fmt(S.unc?.hub || 0, 3)} + load ${fmt(S.unc?.load || 0, 3)} g·mm from the bodies' mass-property ± (the piece's own mesh is exact).</div>
+    <div class="hint">± = input uncertainty: hub ${S.unc ? hubUncTxt(S.unc) : fmt(0, 3)} + load ${fmt(S.unc?.load || 0, 3)} g·mm from the bodies' mass-property ± (the piece's own mesh is exact).</div>
     <div class="hint">${r.cells ? `${esc(r.cells)} cells of ${fmt(r.cell, 3)} × ${fmt(r.cell, 3)} × ${fmt(r.cellW, 3)} mm · ${esc(r.iterations)} mesh iteration${r.iterations === 1 ? '' : 's'} · ${esc(r.tris)} triangles · ${esc(r.components)} piece${r.components === 1 ? '' : 's'}${r.open ? `, ${esc(r.open)} open edges` : ', closed'} · ` : 'restored from the session (containment and hub contact re-measured) · '}${hline}${r.cells ? ` · inside hub ${esc(r.insideHub)}, outside band ${esc(r.outsideBand)} · ${esc(r.inset || 0)} vertices inset by ${fmt(r.margin || 0, 3)} mm, ${esc(r.split || 0)} edges split · ${fmt(r.ms / 1000, 3)} s` : ''}${r.notes?.length ? ' · ' + esc(r.notes.join('; ')) : ''}</div>
     <div class="hint">The piece is a Counterweight in check mode above and a row in the body table. Export it below (STL or faceted STEP, mm, model coordinates).</div>`;
 }
@@ -585,6 +642,7 @@ const xfer = b => ({ pos: b.pos.slice(), idx: b.idx.slice() }); // copies whose 
 function runGen() {
   const S = balanceState(), msg = (m, bad) => { $('#genmsg').textContent = m; $('#genmsg').className = 'hint' + (bad ? ' bad' : ''); };
   if (!S.hub) return msg('set one body as Hub first', true);
+  if (hjob) { hjob.thenGen = true; return msg('waiting for the fine hub mesh — the generator starts when it finishes (Cancel it or choose Hub mesh: Fast to use the import mesh)'); }
   if (S.hi.boundary < 0) return msg('set one body as Boundary first', true);
   if (S.band.error) return msg('axial band: ' + S.band.error, true);
   const am = addedMaterial(st.bal.added, S.hub); if (!am) return msg('choose the added material (or type its density)', true);
@@ -611,7 +669,7 @@ function runGen() {
   };
   w.onerror = e => { e.preventDefault?.(); finish(); msg('generator worker failed: ' + (e.message || 'out of memory?'), true); };
   const bd = xfer(Bd), hb = xfer(H);
-  w.postMessage({ boundary: bd, hub: hb, axis: { p: st.axis.p, d: st.axis.d }, band: S.band.w, target: T.U, rho: am.rho, cell, tol, ...genTols(H, Bd, cell) }, [bd.pos.buffer, bd.idx.buffer, hb.pos.buffer, hb.idx.buffer]);
+  w.postMessage({ boundary: bd, hub: hb, axis: { p: st.axis.p, d: st.axis.d }, band: S.band.w, target: T.U, rho: am.rho, cell, tol, unc: S.unc?.base || 0, ...genTols(H, Bd, cell) }, [bd.pos.buffer, bd.idx.buffer, hb.pos.buffer, hb.idx.buffer]);
 }
 // L13: a restored piece's containment and hub contact are re-measured in the worker (same functions), never trusted
 function verifyGen() {
@@ -648,11 +706,12 @@ function exportGen() {
     else if (d.type === 'done') {
       finish(); const size = typeof d.data === 'string' ? d.data.length : d.data.byteLength;
       save(file, d.data, kind === 'step' ? 'application/step' : 'model/stl'); st.lastExport = { file, size, kind };
-      msg(`exported ${file} (${(size / 1024).toFixed(0)} kB${hub ? ', hub + piece as separate bodies' : ''}${d.skipped ? `, ${d.skipped} zero-area facets left out` : ''})`);
+      const ref = (d.report || []).filter(r => !r.solid);
+      msg(`exported ${file} (${(size / 1024).toFixed(0)} kB${hub ? ', hub + piece as separate bodies' : ''}${(d.report || []).filter(r => r.solid).length ? ', ' + d.report.filter(r => r.solid).map(r => r.name).join(' + ') + ' as closed solids' : ''}${d.skipped ? `, ${d.skipped} zero-area facets left out` : ''})${ref.map(r => ` — the hub mesh could not be closed (${r.reason}), so it is written as a reference surface (${r.name}, an open shell), not a solid`).join('')}`, ref.length > 0);
     }
   };
   w.onerror = e => { e.preventDefault?.(); finish(); msg('export worker failed: ' + (e.message || 'out of memory?'), true); };
-  w.postMessage({ kind, bodies, name: hub ? 'hub_and_counterweight' : nm });
+  w.postMessage({ kind, bodies, name: hub ? 'hub_and_counterweight' : nm, solidOnly: [nm] });
 }
 const uniqueGenName = () => { let n = 'Generated CW', k = 2; while (st.bodies.some(b => b.name === n)) n = `Generated CW ${k++}`; return n; };
 function dropGenerated() { const i = st.bodies.findIndex(b => b.generated); if (i < 0) return false; st.bodies.splice(i, 1); st.sels = st.sels.filter(j => j !== i).map(j => j > i ? j - 1 : j); st.sel = st.sels.at(-1) ?? -1; st.gen = null; return true; }
@@ -663,7 +722,7 @@ function stageGenerated(j) {
   const g = unpackGenerated(j), cards = []; if (!g) return { gen: null, body: null, cards };
   if (g.bad) cards.push(['warn', `Session: ${g.bad} invalid generated-piece field${g.bad > 1 ? 's' : ''} ignored.`]);
   if (g.needsRegenerate) { cards.push(['warn', `Session: ${esc(g.note)}.`]); return { gen: { needsRegenerate: true, meta: g.meta, note: g.note }, body: null, cards }; }
-  const meta = { ...g.meta }; for (const k of ['tol', 'contained', 'outsideBoundary', 'crossBoundary', 'insideHub', 'hubVertices', 'hubGap', 'contactTol', 'maxOut', 'dipBoundary', 'checkTol']) delete meta[k];
+  const meta = { ...g.meta }; for (const k of ['tol', 'goal', 'unc', 'stopTol', 'contained', 'outsideBoundary', 'crossBoundary', 'insideHub', 'hubVertices', 'hubGap', 'contactTol', 'maxOut', 'dipBoundary', 'checkTol']) delete meta[k];
   const body = { name: g.name, stepName: '(generated)', product: '', pos: g.pos, idx: g.idx, vol: meshMoments(g.pos, g.idx), rho: g.rho, sign: 1, on: g.on, src: 'generated', mat: g.mat ?? materialId(g.rho), role: 'cw', generated: true, faces: [] };
   return { gen: { key: g.meta?.key || null, meta, needsRegenerate: false, verify: { pending: true } }, body, cards };
 }

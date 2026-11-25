@@ -159,7 +159,10 @@ export function containment(I, pos, idx, { tol = 1e-6 * I.diag, maxEdgeTests = 4
 // Check containment (check-worker.js) and the generator's own verification, so the two always agree. maxOut is
 // measured: the largest distance outside the boundary surface over the outside vertices and over 16 samples along
 // every crossing edge (0 when inside).
-export function checkBody(B, H, pos, idx, tol, { cancelled = () => false, maxEdgeTests = 4e6 } = {}) {
+// L18 (alpha.6): edge-test budget raised 4e6 → 3e7 (boundaries with long planar-face triangles near the piece hit the
+// old cap and the check was reported as skipped)
+export const EDGE_TESTS = 3e7;
+export function checkBody(B, H, pos, idx, tol, { cancelled = () => false, maxEdgeTests = EDGE_TESTS } = {}) {
   const r = containment(B, pos, idx, { tol, maxEdgeTests, cancelled, edgeList: true });
   let maxOut = 0; const far = B.diag, pts = [], mark = x => { if (pts.length < 15000) pts.push(x[0], x[1], x[2]); };
   const outd = x => { if (classify(B, x) !== 'out') return 0; for (let r = Math.max(4 * tol, 1e-3 * far); ; r *= 4) { const n = nearestPoint(B, x, Math.min(r, far)); if (n) return n.d; if (r >= far) return 0; } }; // growing search radius

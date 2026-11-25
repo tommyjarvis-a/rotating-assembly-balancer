@@ -1,4 +1,4 @@
-import { buildIndex, columnHeights, insideIntervals, segmentHit, classify, containment, nearSurface, nearestPoint, checkBody, containTol } from './contain.js';
+import { buildIndex, columnHeights, insideIntervals, segmentHit, classify, containment, nearSurface, nearestPoint, checkBody, containTol, EDGE_TESTS } from './contain.js';
 import { meshMoments, KGM3, meshCheck } from './mass.js';
 import { frame } from './imbalance.js';
 // Counterweight generator (0.2.0-alpha.3, static). Pure JS; runs in src/gen-worker.js and in Node tests.
@@ -18,7 +18,7 @@ import { frame } from './imbalance.js';
 //    the region (boundary, hub, band) is put back.
 // 6) Exact mass properties of the mesh; if the leftover after meshing is over tolerance, re-target the voxel step by
 //    the leftover and repeat (≤ maxIter). The best mesh is returned with the iteration count.
-export const GEN = { cellsAcross: 120, maxNodes: 2.5e6, smoothIter: 6, lambda: 0.5, mu: -0.53, maxIter: 8, maxMoves: 40000, containPasses: 8 };
+export const GEN = { cellsAcross: 120, maxNodes: 2.5e6, smoothIter: 6, lambda: 0.5, mu: -0.53, maxIter: 8, maxMoves: 40000, containPasses: 8, forbidRounds: 6, forbidR: 1.5, minTolFrac: 1e-6 };
 const nice = x => { const e = 10 ** Math.floor(Math.log10(x)), f = x / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; };
 export const defaultCell = diag => Math.max(0.02, nice(diag / GEN.cellsAcross));
 export function toFrame(pos, fr) {
@@ -39,10 +39,14 @@ class Heap { // max-heap of [key, id]
   get size() { return this.k.length; }
 }
 
-export function generate({ boundary, hub, axis, band, target, rho, cell, tol, maxNodes = GEN.maxNodes, progress = () => { }, cancelled = () => false, maxIter = GEN.maxIter, smoothIter = GEN.smoothIter, contactTol = null, margin = null, checkTol = null, containPasses = GEN.containPasses }) {
+export function generate({ boundary, hub, axis, band, target, rho, cell, tol, maxNodes = GEN.maxNodes, progress = () => { }, cancelled = () => false, maxIter = GEN.maxIter, smoothIter = GEN.smoothIter, contactTol = null, margin = null, checkTol = null, containPasses = GEN.containPasses, unc = 0, forbidRounds = GEN.forbidRounds }) {
   const t0 = Date.now(), notes = [], chk = () => { if (cancelled()) throw Object.assign(new Error('cancelled'), { cancelled: true }); };
   if (!(rho > 0)) throw new Error('added material density must be positive');
   const Tm = Math.hypot(...target); if (!(Tm > 0)) throw new Error('nothing to balance: the target imbalance is zero');
+  // L17 (0.2.0-alpha.6): the stop criterion is |R| + U ≤ tol (U = the input uncertainty of hub + load; the piece's own
+  // mesh is exact). When U ≥ tol no piece can PASS: the goal is then the smallest |R| the cells allow ('minimal').
+  const U0 = unc > 0 ? unc : 0, tolIn = tol, goal = tol - U0 > GEN.minTolFrac * Tm ? 'pass' : 'minimal';
+  tol = goal === 'pass' ? tol - U0 : GEN.minTolFrac * Tm;
   const fr = frame(axis.p, axis.d), B = toFrame(boundary.pos, fr), H = toFrame(hub.pos, fr);
   progress('Indexing boundary and hub', 0.02);
   const IB = buildIndex(B, boundary.idx), IH = buildIndex(H, hub.idx);
@@ -127,6 +131,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
       if (!(f & 1)) { const x = segmentHit(IB, pa, pb); c.push([x ?? 0.5, 'bnd']); }
       if (f & 2) { const x = segmentHit(IH, pa, pb); c.push([x ?? 0.5, 'hub']); }
       if (!(f & 4)) { const x = bandPlane(pa, pb); c.push([x ?? 0.5, 'band']); }
+      if (f & 8) c.push([0.5, 'bnd']); // L18: a node forbidden after a containment failure (narrow concave feature)
       c.sort((x, y) => x[0] - y[0]); [t, tag] = c[0]; t = Math.min(1, Math.max(0, t));
     }
     e = { p: [0, 1, 2].map(k => pa[k] + t * (pb[k] - pa[k])), tag }; ecache.set(key, e); return e;
@@ -197,7 +202,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
         if (!out && (tags[i] === 'hub' && !ins[i] || !Number.isFinite(nearSurface(IB, x, dm * 0.999)))) continue;
         const y = place(x, dm); if (y && (y[0] !== x[0] || y[1] !== x[1] || y[2] !== x[2])) { P[3 * i] = y[0]; P[3 * i + 1] = y[1]; P[3 * i + 2] = y[2]; moved++; changed++; }
       }
-      const cr = containment(IB, Float64Array.from(P), I, { tol: 0.5 * mg, edgeList: true, maxEdgeTests: 8e6 }), cross = new Set();
+      const cr = containment(IB, Float64Array.from(P), I, { tol: 0.5 * mg, edgeList: true, maxEdgeTests: EDGE_TESTS }), cross = new Set();
       // an edge that still crosses (a chord round a re-entrant boundary edge): its ends go further in (2×, 4×, … the
       // margin, at most a quarter cell) on the next pass instead of being split again; once both are that deep it is split
       for (let e = 0; e < cr.crossEdges.length; e += 2) {
@@ -232,18 +237,51 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
   // Iterations mesh without the (costly) containment step and use the moment change it made last time (dQ) as the
   // estimate; a candidate (estimate within tol, capped, or the last iteration) gets the containment step and its
   // exact moments. Only contained candidates can be the result.
-  let bestMesh = null, iter = 0, dQ = [0, 0];
-  for (iter = 1; iter <= maxIter; iter++) {
+  // L18 (0.2.0-alpha.6): a candidate that is still not contained after enforcement (chords round narrow re-entrant
+  // features such as 4 mm slots) is not accepted: the grid nodes within GEN.forbidR cells of every offending point
+  // are forbidden, the selection retreats from them (kept connected to the hub) and the loop goes on, up to
+  // forbidRounds extra rounds. Only contained candidates can be the result when one exists.
+  const forbid = pts => {
+    let nf = 0; const r = GEN.forbidR * Math.max(h, hw), ri = Math.ceil(r / h) + 1, rk = Math.ceil(r / hw) + 1;
+    for (let q = 0; q < pts.length; q += 3) {
+      const x = pts[q], y = pts[q + 1], z = pts[q + 2], i0 = Math.round((x - IB.lo[0]) / h + 0.5), j0 = Math.round((y - IB.lo[1]) / h + 0.5), k0 = Math.round((z - w0) / hw + 0.5);
+      for (let k = k0 - rk; k <= k0 + rk; k++) for (let j = j0 - ri; j <= j0 + ri; j++) for (let i = i0 - ri; i <= i0 + ri; i++) {
+        if (i < 0 || j < 0 || k < 0 || i >= NU || j >= NV || k >= NW) continue; const n = at(i, j, k);
+        if (!allowed(n) || Math.hypot(U(i) - x, Vv(j) - y, W(k) - z) > r) continue; flag[n] |= 8; nf++; if (sel[n]) remove(n); frontier.delete(n);
+      }
+    }
+    // keep the part connected to the hub
+    const seen = new Uint8Array(N), stack = [...selList].filter(n => touchesHub[n]); for (const n of stack) seen[n] = 1;
+    while (stack.length) { const n = stack.pop(); for (const m of nb6(n)) if (sel[m] && !seen[m]) { seen[m] = 1; stack.push(m); } }
+    for (const n of [...selList]) if (!seen[n]) remove(n);
+    for (const n of [...frontier]) if (!allowed(n)) frontier.delete(n);
+    return nf;
+  };
+  const openPts = m => { const c = new Map(), out = []; for (let t = 0; t < m.idx.length; t += 3) for (let k = 0; k < 3; k++) { const a = m.idx[t + k], b = m.idx[t + (k + 1) % 3], e = a < b ? a * 4294967296 + b : b * 4294967296 + a; c.set(e, (c.get(e) || 0) + 1); }
+    for (const [e, n] of c) if (n !== 2) { const a = Math.floor(e / 4294967296); out.push(m.posF[3 * a], m.posF[3 * a + 1], m.posF[3 * a + 2]); } return out; };
+  const cTolF = checkTol > 0 ? checkTol : containTol(IB.diag, []);
+  let bestMesh = null, iter = 0, dQ = [0, 0], rounds = 0, forbidden = 0;
+  const better = (m, b) => !b || (m.ok && !b.ok) || (m.ok === b.ok && Math.hypot(...m.R) < Math.hypot(...b.R));
+  for (iter = 1; iter <= maxIter + 2 * rounds; iter++) {
     chk(); progress(`Meshing (iteration ${iter})`, 0.5 + 0.45 * (iter - 1) / maxIter);
     const raw = mesh(); let R = [target[0] - raw.Q[0] - dQ[0], target[1] - raw.Q[1] - dQ[1]];
-    if (Math.hypot(...R) <= tol || capped || iter === maxIter) {
+    if (Math.hypot(...R) <= tol || capped || iter >= maxIter || (goal === 'minimal' && iter >= 2)) { // minimal: every iteration is a candidate, the best contained one wins
       progress(`Keeping the piece inside the Boundary (iteration ${iter})`, 0.5 + 0.45 * (iter - 0.5) / maxIter);
       const m = contained(raw); dQ = [m.Q[0] - raw.Q[0], m.Q[1] - raw.Q[1]]; R = [target[0] - m.Q[0], target[1] - m.Q[1]]; m.R = R; m.iter = iter; m.cells = selList.size;
-      if (!bestMesh || Math.hypot(...R) < Math.hypot(...bestMesh.R)) bestMesh = m;
-      if (Math.hypot(...R) <= tol || capped) break;
+      const cv = containment(IB, m.posF, m.idx, { tol: cTolF, cancelled, maxEdgeTests: EDGE_TESTS, edgeList: true }), open = meshCheck(m.posF, m.idx, m.vol).open;
+      m.ok = cv.inside && !cv.crossSkipped && !open;
+      if (better(m, bestMesh)) bestMesh = m;
+      if (m.ok && (Math.hypot(...R) <= tol || capped)) break;
+      if (!m.ok && rounds < forbidRounds) {
+        const bad = []; for (const v of cv.outside) bad.push(m.posF[3 * v], m.posF[3 * v + 1], m.posF[3 * v + 2]);
+        for (let e = 0; e < cv.crossEdges.length; e += 2) for (const v of [cv.crossEdges[e], cv.crossEdges[e + 1]]) bad.push(m.posF[3 * v], m.posF[3 * v + 1], m.posF[3 * v + 2]);
+        const nf = forbid(bad.length ? bad : openPts(m)); if (nf) { rounds++; forbidden += nf; progress(`Retreating from a narrow concave feature (${forbidden} grid nodes excluded)`, 0.5 + 0.45 * (iter - 0.5) / (maxIter + 2 * rounds)); refine(); continue; }
+      }
+      if (iter >= maxIter + 2 * rounds) break;
     }
-    if (iter < maxIter) { Tv = [Tv[0] + R[0], Tv[1] + R[1]]; refine(); if (cancelled()) chk(); }
+    if (iter < maxIter + 2 * rounds) { Tv = [Tv[0] + R[0], Tv[1] + R[1]]; refine(); if (cancelled()) chk(); }
   }
+  if (forbidden) notes.push(`${forbidden} grid nodes next to narrow concave boundary features were excluded so the piece stays inside (${rounds} round${rounds > 1 ? 's' : ''})`);
   const m = bestMesh, world = fromFrame(m.posF, fr), idx = Uint32Array.from(m.idx);
   // checks: one piece, closed / manifold, containment, hub contact
   const par = new Int32Array(world.length / 3).map((_, i) => i), root = i => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
@@ -254,7 +292,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
   // world coordinates at the Check tolerance; maxOut is measured. Hub overlap: strict (touching is not overlap).
   progress('Checking containment', 0.96);
   const Bw = buildIndex(boundary.pos, boundary.idx), Hw = buildIndex(hub.pos, hub.idx), cTol = checkTol > 0 ? checkTol : containTol(Bw.diag, []);
-  const ver = checkBody(Bw, Hw, world, idx, cTol, { cancelled });
+  const ver = checkBody(Bw, Hw, world, idx, cTol, { cancelled, maxEdgeTests: EDGE_TESTS });
   // L14: hub contact = vertices on the hub mesh surface within contactTol (the mesh deflection or a small fraction of
   // the cell); the measured minimum vertex–hub distance is reported too.
   const ctH = contactTol > 0 ? contactTol : Math.max(ctol, 1e-3 * h); let hubContact = 0, hubGap = 1 / 0;
@@ -267,7 +305,7 @@ export function generate({ boundary, hub, axis, band, target, rho, cell, tol, ma
     if (classify(IH, x) === 'in') { const d = nearSurface(IH, x, h); if (Number.isFinite(d)) dipH = Math.max(dipH, d); }
   }
   let bandOut = 0; for (let i = 2; i < m.posF.length; i += 3) if (m.posF[i] < w0 - 1e-9 || m.posF[i] > w1 + 1e-9) bandOut++;
-  return { pos: world, idx, frame: { o: fr.o, R: fr.R }, cell: h, cellW: hw, grid: [NU, NV, NW], allowed: nAllowed, cells: m.cells, iterations: m.iter, residual: m.R, achieved: m.Q, target, tol,
+  return { pos: world, idx, frame: { o: fr.o, R: fr.R }, cell: h, cellW: hw, grid: [NU, NV, NW], allowed: nAllowed, cells: m.cells, iterations: m.iter, residual: m.R, achieved: m.Q, target, tol: tolIn, stopTol: tol, unc: U0, goal,
     volume: m.vol, mass: m.vol * rho * KGM3, components: comps.size, open: closed.open, hubVertices: hubContact, hubGap: Number.isFinite(hubGap) ? hubGap : null, contactTol: ctH, dipBoundary: ver.maxOut, maxOut: ver.maxOut, dipHub: dipH, reverted: m.reverted, inset: m.inset, split: m.split, margin: mg, checkTol: cTol, contained: ver.inside && !ver.crossSkipped, outPts: ver.outPts,
     outsideBoundary: ver.nOut, crossBoundary: ver.crossSkipped ? null : ver.crossings, insideHub: ver.hubOverlap.nIn, outsideBand: bandOut, band: [w0, w1], capped, notes, ms: Date.now() - t0 };
 }

@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.5</small><span id="status">Drop STEP files to start</span></header>
+<header><b>Rotating Assembly Balancer</b> <small id="ver">0.2.0-alpha.6</small><span id="status">Drop STEP files to start</span></header>
 <main>
 <aside id="panel">
   <section>
@@ -44,6 +44,8 @@
     <div class="row"><label title="Orbiting load (e.g. the orbiting scroll) as a point mass on the pin axis at radius e">Orbiting load <select id="load"></select></label><input id="loadmass" type="number" step="any" min="0" placeholder="g" hidden title="Typed load mass, g"></div>
     <div class="row"><label title="Speed for the ISO 1940 balance grade (optional)">RPM <input id="rpm" type="number" step="any" min="0" placeholder="optional"></label>
       <label title="Check-mode tolerance on the residual">Tolerance <input id="tolv" type="number" step="any" min="0" placeholder="optional"> <select id="tolk"><option value="gmm">g·mm</option><option value="G">ISO G grade</option></select></label></div>
+    <div class="row"><label title="Mesh used for the Hub's mass properties. Fine: the hub is re-meshed on its own with a large triangle budget (two passes + Richardson, in a worker; can take a minute on big hubs). Fast: the coarser import mesh, for big files.">Hub mesh <select id="hubmesh"><option value="fine" selected>Fine (default, slower)</option><option value="fast">Fast (coarse)</option></select></label> <button id="hubremesh" hidden title="Run the fine hub re-mesh again">Re-mesh hub finely</button> <span id="hubmeshmsg" class="hint"></span></div>
+    <div id="hjob" class="card info" hidden><span id="hjobmsg"></span> <button id="hcancel">Cancel</button></div>
     <div id="statout" class="statout"></div>
     <div id="checkout" class="statout"></div>
     <div class="row"><button id="contain" title="Check that every existing counterweight body lies inside the Boundary (runs in a worker)">Check containment</button> <span id="containmsg" class="hint"></span></div>
@@ -93,7 +95,7 @@
   <section>
     <details id="about"><summary>About</summary>
       <p class="hint">Rotating Assembly Balancer, an alpha tool: STEP import, static / couple balance, counterweight set-up, generation and check.</p>
-      <p class="hint" id="aboutstep"><b>STEP export of the generated piece is faceted</b> for now: planar triangles (FACETED_BREP of planar faces), not B-spline surfaces. NX imports it as a faceted or sewn solid; its volume and CG match the in-app piece. STL export is the same triangles. Both are in mm, in absolute model coordinates, so the piece lands in place.</p>
+      <p class="hint" id="aboutstep"><b>STEP export of the generated piece is faceted</b> for now: planar triangles (FACETED_BREP of planar faces), not B-spline surfaces. NX imports it as a faceted or sewn solid. Each body is welded and checked closed before writing (with the hub, the hub is a closed solid too, or a clearly named reference surface if its mesh cannot be closed); read with plain OpenCascade its volume matches the in-app mesh to ~1e-14 (not yet checked in NX). STL export is the same triangles. Both are in mm, in absolute model coordinates, so the piece lands in place.</p>
       <p class="hint">STL import: binary or ASCII, up to 256 MB / 5 M triangles, parsed in a worker; choose the STL units (default mm). An imported STL gets the Counterweight (existing) role and the added-material density, so a re-imported piece is checked in check mode.</p>
     </details>
   </section>

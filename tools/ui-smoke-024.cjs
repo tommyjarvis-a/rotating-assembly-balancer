@@ -30,7 +30,7 @@ const url = process.argv[2] || 'http://localhost:8765/', FIX = process.env.STP |
     const diff = (a, b2) => a && b2 ? `ΔV ${(a.V / b2.V - 1).toExponential(2)}, ΔCG ${Math.hypot(...a.c.map((v, k) => v - b2.c[k])).toExponential(2)} mm` : 'missing';
     try {
       await p.goto(url); const t0 = Date.now(); await load(FIX); const tImp = (Date.now() - t0) / 1000;
-      check('version 0.2.0-alpha.5 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.5');
+      check('version 0.2.0-alpha.6 in the header', (await p.textContent('#ver')).trim() === '0.2.0-alpha.6');
       check('About: STEP export is faceted (planar triangles, not B-spline), NX imports it as a faceted / sewn solid', /faceted/.test(await p.textContent('#aboutstep')) && /not B-spline/.test(await p.textContent('#aboutstep')) && /NX imports it as a faceted or sewn solid/.test(await p.textContent('#aboutstep')));
       check('file input accepts .stl; STL units default mm', /\.stl/.test(await p.getAttribute('#file', 'accept')) && await p.inputValue('#stlunit') === 'mm');
       if (CUSTOM) { await role(+process.env.HUB - 1, 'hub'); await role(+process.env.BND - 1, 'boundary'); }

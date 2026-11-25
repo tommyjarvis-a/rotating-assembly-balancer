@@ -256,13 +256,37 @@ Section **2c · Generate counterweight** (needs one Hub and one Boundary; the dr
    lands in place in NX), named `Generated_CW`. The STEP is **faceted**: one FACETED_BREP whose faces are planar
    FACE_SURFACEs bounded by triangular POLY_LOOPs (not B-spline surfaces; NX imports it as a faceted or sewn solid),
    with the density written per product. *with hub* writes the hub's tessellation and the piece as two separate
-   bodies in one STEP. Runs in a worker with Cancel; downloads are blob URLs.
+   bodies in one STEP. Runs in a worker with Cancel; downloads are blob URLs. 0.2.0-alpha.6: every body is welded
+   (quantized positions), collinear facets are removed topologically and the mesh is checked (every edge shared by
+   exactly 2 facets, consistent orientation, positive volume) before writing, so the hub is one closed FACETED_BREP
+   too; a hub mesh that cannot be closed is written as a reference surface (`<name>_REFERENCE`, an open shell) with a
+   note, and the piece must be closed (else no export). Checked with plain OCCT (`tools/ocp-step-check.py`): one solid
+   and one closed shell per body, all vertex tolerances 1e-7 mm, OCCT volume = facet volume to ~1e-14 relative.
 6. **STL import** — binary or ASCII (≤ 256 MB, ≤ 5 M triangles), parsed and welded in a worker; choose *STL units*
    (default mm). The body gets the Counterweight (existing) role and the added-material density, so a re-imported
    piece is judged in check mode (remove the generated piece first, or both count). Open / inside-out STLs are
    reported (inside-out ones are flipped). A planar faceted STEP (this export) is read in one exact pass.
 
-## Limitations (0.2.0-alpha.4)
+## Fine hub mesh and the CAD-tolerance floor (0.2.0-alpha.6)
+
+The hub sets the imbalance, so by default (*Hub mesh: Fine*) it is re-meshed on its own when it gets the Hub role:
+a STEP subset holding just that solid, two passes (deflection 2.5e-4 × the hub's bbox diagonal and 0.07 rad, then
+d/4 and half the angle — never coarser than the import mesh), Richardson extrapolation, up to 2.5 M triangles in the
+fine pass, in a worker with progress and Cancel (the generator waits for it). Only the hub's mass properties change;
+its display / contact / export geometry stays the import mesh. *Fast (coarse)* uses the import mesh (big files). The
+choice is saved in the session (`balance.hubMesh`, schema-checked).
+
+The tessellation part of a body's ± now keeps the CG change as vectors, and only its component perpendicular to the
+spin axis enters U (an axial CG error does not change the static imbalance). On the NX test file (hub 239 g) the
+fine mesh gives a tessellation ± of 0.009 g·mm (import mesh: 0.59 g·mm); the remaining difference to OCP's exact
+B-rep value is 0.014 g·mm. But that file declares a 0.1 mm modelling uncertainty, and the CAD floor
+(0.2 · δ of CG, 0.01 · δ of volume) is applied to every body: 239 g × 0.02 mm = 4.78 g·mm (+0.04 from volume) =
+**± 4.82 g·mm**, which a finer mesh cannot lower. The readout says when the floor sets the hub's ±. The floor is
+kept as is: it is a valid bound for U (|perpendicular CG error| ≤ the 3-D error) and the one body on that file with a
+measured CAD-gap error showed it entirely perpendicular to the axis; it is conservative because it models a rigid
+shift of the whole body (scales with mass), where the measured gap errors were small misplaced volumes.
+
+## Limitations (0.2.0-alpha.6)
 
 - The generator is static only (one correction plane); the solver API (`correctionTarget` in `src/statics.js`) takes
   a list of correction planes for two-plane later. The orbiting
@@ -272,12 +296,14 @@ Section **2c · Generate counterweight** (needs one Hub and one Boundary; the dr
 - The piece is voxel-shaped (cell size) with a lightly smoothed surface. It is kept inside the Boundary *mesh* by
   at least the margin (the boundary's mesh deflection) and verified with the Check-containment test at the Check
   tolerance; against the exact CAD surface it can still differ by up to the boundary's chordal deflection. If the
-  containment step cannot clear every crossing (8 passes), the result is reported as FAIL with the measured
-  protrusion, not hidden. Hub contact is judged within the hub deflection + 1.5 × margin (≤ 0.1 cell).
+  containment step cannot clear every crossing (8 passes), the grid nodes next to the offending points are excluded
+  and the piece retreats (up to 6 rounds, alpha.6 — narrow concave slots); if it still is not contained the result
+  is reported as FAIL with the measured protrusion, not hidden. Retreating costs time (a 5000-cell piece in a slotted
+  drum: ~100 s in Node). Hub contact is judged within the hub deflection + 1.5 × margin (≤ 0.1 cell).
 - The residual ± U is a worst-case linear sum of the per-body mass-property ± (from tessellation / declared CAD
   tolerance). With loose CAD tolerances U can be several g·mm, so a tight tolerance reads CAN'T RESOLVE: use a finer
-  import (accurate mode) or a looser tolerance. The generator's own leftover after the containment step can end
-  slightly above a very tight tolerance (shown; it then reads FAIL or CAN'T RESOLVE).
+  import (accurate mode) or a looser tolerance. The generator stops at |R| + U ≤ tol (alpha.6); when U ≥ tol no
+  piece can PASS and it minimises |R| instead (said in the result).
 - STEP export is faceted (planar triangles), not a B-spline / analytic B-rep, and the file is large (~400 bytes per
   triangle: ~1.6 MB for a 4k-triangle piece). Binary STL has float32 coordinates (~1e-5 relative). Re-importing a
   faceted STEP costs ~0.4 ms per triangle in OpenCascade.

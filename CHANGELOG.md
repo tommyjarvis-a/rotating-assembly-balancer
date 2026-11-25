@@ -1,11 +1,51 @@
 # Changelog
 
+## 0.2.0-alpha.6 — 2026-11-24 (alpha)
+
+Fine hub mesh by default, plus the Lows L16–L20 from the alpha.4/alpha.5 gate.
+- **Fine hub mesh (default).** When a body gets the Hub role it is re-meshed on its own (`src/hub-mesh.js`,
+  `src/hub-worker.js`: STEP subset of that solid, 2 passes d = 2.5e-4 × bbox diagonal / 0.07 rad then d/4 and half
+  the angle, never coarser than the import mesh, ≤ 2.5 M triangles, Richardson), in a worker with progress and
+  Cancel; Cancel or a failure keeps the import mesh with a message and a *Re-mesh hub finely* button; Generate waits
+  for a running re-mesh. *Hub mesh: Fast (coarse)* uses the import mesh; the choice is saved in the session
+  (`balance.hubMesh`, schema-checked: anything but `fine` / `fast` is rejected with a note). Only vol / ± change (the
+  display / contact geometry stays the import mesh); the session fingerprint uses the import volume.
+  NX test file (local only): import 32.6 s, hub re-mesh 37 s (841k triangles, 0.006 mm) in Chromium.
+- **Axis-aware ±.** The tessellation ± keeps the CG change as vectors; only the part perpendicular to the spin axis
+  enters U. The CAD-tolerance floor stays isotropic and separate: the readout shows "hub ± X [mesh ± Y; set by the
+  CAD-tolerance floor]" and CAN'T RESOLVE says when a finer mesh cannot help. NX test file: hub tessellation ±
+  0.59 → 0.009 g·mm, but U stays 4.82 g·mm (floor 239 g × 0.02 mm + 0.04), so the default tolerances still read
+  CAN'T RESOLVE (see README, *Fine hub mesh and the CAD-tolerance floor*).
+- **L16** the generator says "touches the hub" only for a gap ≤ 0.001 cell; otherwise "seated on the hub within the
+  contact tolerance: measured gap X mm ≤ tol" (the L14 rule), e.g. 0.084 mm ≤ 0.1 mm on the NX file.
+- **L17** stop criterion |R| + U ≤ tol (U = hub + load input uncertainty). When U ≥ tol the generator minimises |R|
+  (every iteration is a candidate) and says so. NX file: tol 6 → PASS (0.225 ± 4.82); pin case leftover 0.398 → 0.025.
+- **L18** a candidate that is still not contained after enforcement is not accepted: grid nodes within 1.5 cells of the
+  offending points are excluded and the piece retreats (kept connected to the hub; ≤ 6 rounds); a contained candidate
+  always wins over a non-contained one. Edge-test budget of the containment check 4e6 → 3e7 (a large piece in the
+  slotted drum was reported as "skipped"). Tester's 5 concave-slot cases (default, pin, pin-big, 0.5 mm cell, 4 mm
+  cell) are all contained now (were 3 FAIL); fixture `test/fixtures/concave-slots-ap242.stp` (from Tester).
+- **L19** faceted STEP: bodies are welded (quantized, 1e-7 × diagonal), collinear facets removed topologically,
+  checked closed / oriented / positive volume; the hub is one closed FACETED_BREP (was 49 open shells in OCP), or a
+  `_REFERENCE` open-shell surface model with a note if its mesh cannot be closed; the piece must be closed.
+  **STEP REAL fix:** the number formatter stripped trailing zeros from exponents (−6.5e-11 → `-6.5E-1`), tilting a
+  few facet planes; that is what made plain OCCT raise vertex tolerances to ~0.35 mm and move the volume by
+  +0.27 % / −0.50 %. Now, with plain OCCT (`tools/ocp-step-check.py`): one solid and one closed shell per body, all
+  vertex tolerances 1e-7 mm, OCCT volume = facet volume to ≤ 1e-14 relative (concave fixture and NX file, hub + piece).
+  The tools STEP export (`step-export.js`) used the same formatter and is fixed too.
+- **L20** STEP strings: apostrophes and backslashes doubled, non-ASCII as `\X2\…\X0\`, length-limited; FILE_NAME /
+  FILE_DESCRIPTION escaped.
+- Tests: 110 Node tests (108 pass, 2 optional OCP checks skipped): `test/finehub020a6.test.mjs` (6) and
+  `test/fixes020a6.test.mjs` (10, incl. the 5 slot cases); `tools/ui-smoke-020a6.cjs` (Playwright, 19 checks: re-mesh
+  job, Cancel / retry, Fast ⇄ Fine, session save / restore / rejection, Generate queued, L16 label, L19 export, CAD
+  floor breakdown).
+
 ## 0.2.0-alpha.5 — 2026-11-24 (alpha)
 
 Slice 3: export of the generated counterweight and STL import (re-import for check mode).
 - **Export** (section 2c, worker with progress and Cancel, blob-URL downloads): binary STL (default) or ASCII STL, and
   STEP AP214 (AUTOMOTIVE_DESIGN) as a **faceted** solid — FACETED_BREP of planar FACE_SURFACEs with triangular
-  POLY_LOOPs (the form shown to re-import with exact volume; not FACE + POLY_LOOP, not TESSELLATED_SOLID), mm, absolute
+  POLY_LOOPs (the form shown to re-import with exact volume in the app's own occt-import-js reader — in plain OCCT a number-format bug moved the volume by +0.27 % / −0.50 %, fixed in alpha.6; not FACE + POLY_LOOP, not TESSELLATED_SOLID), mm, absolute
   model coordinates, product / body `Generated_CW`, density as a per-product measure. Optional *with hub*: hub
   tessellation + piece as two separate bodies in one STEP. Zero-area facets are left out of the STEP (counted).
 - **STL import**: binary and ASCII, size (256 MB) and triangle (5 M) guards, finite / |x| ≤ 1e7 mm coordinates, parsed,

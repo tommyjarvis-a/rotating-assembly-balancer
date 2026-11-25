@@ -68,7 +68,7 @@ for (const k of ['pin', 'defaults']) test(`M11: ${k} case — the generated piec
 });
 
 test('M11: without enforcement the same case leaves the Boundary — reported as not contained with a measured protrusion (blocks PASS)', () => {
-  const r = run(scene(true), { containPasses: 0 });
+  const r = run(scene(true), { containPasses: 0, forbidRounds: 0 });
   assert.equal(r.contained, false); assert.ok(r.crossBoundary + r.outsideBoundary > 0); assert.ok(r.maxOut > 0.05, String(r.maxOut)); assert.ok(r.outPts.length > 0, 'points to mark red');
   const S = scene(true), v = checkBody(buildIndex(Float64Array.from(S.boundary.pos), S.boundary.idx), null, r.pos, r.idx, CTOL);
   assert.equal(v.inside, r.contained); assert.equal(v.crossings, r.crossBoundary); assert.equal(v.maxOut, r.maxOut, 'generator readout == Check containment');

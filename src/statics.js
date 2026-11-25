@@ -91,7 +91,20 @@ export const CHECK = { matched: 0.02, angleDeg: 5 }; // |ratio − 1| below this
 // base: hub + orbiting load U (g·mm); cw: existing counterweight U; tol: { kind: 'gmm' | 'G', value }, M rotor mass (g).
 // 0.2.0-alpha.4 (M10): uncertainty of a body's static moment |U| = m·r from its mass-property ± (relative volume dV,
 // CG dc mm): |m|·dc + |U|·dV (worst case). Summed over the bodies (and the orbiting load) it bounds the residual error.
-export const momentUnc = (m, Umag, unc) => unc ? Math.abs(m) * (unc.dc || 0) + Math.abs(Umag) * (unc.dV || 0) : 0;
+// ± of a body's static moment |U| = m·r (g·mm): |m|·δc⊥ + |U|·δV. 0.2.0-alpha.6: with the spin axis direction w and a
+// tessellation CG-change vector (unc.dcv / unc.mesh.dcv), only its component perpendicular to w counts (an axial CG
+// error does not change U); the CAD-tolerance floor (unc.cadDc, cadDV) stays isotropic and is applied as a floor.
+const perp = (v, w) => { const d = v[0] * w[0] + v[1] * w[1] + v[2] * w[2]; return Math.hypot(v[0] - d * w[0], v[1] - d * w[1], v[2] - d * w[2]); };
+export function momentUncParts(m, Umag, unc, w = null) {
+  if (!unc) return { total: 0, mesh: 0, floor: 0, floorSets: false };
+  const ms = unc.mesh || unc, wn = w && Math.hypot(...w) > 0 ? w.map(x => x / Math.hypot(...w)) : null;
+  const dcM = wn && Array.isArray(ms.dcv) && ms.dcv.length ? Math.max(...ms.dcv.map(v => perp(v, wn))) : (ms.dc || 0);
+  const mesh = Math.abs(m) * dcM + Math.abs(Umag) * (ms.dV || 0);
+  if (!(unc.cadDc > 0 || unc.cadDV > 0)) return { total: mesh, mesh, floor: 0, floorSets: false };
+  const total = Math.abs(m) * Math.max(dcM, unc.cadDc || 0) + Math.abs(Umag) * Math.max(ms.dV || 0, unc.cadDV || 0), floor = Math.abs(m) * (unc.cadDc || 0) + Math.abs(Umag) * (unc.cadDV || 0);
+  return { total, mesh, floor, floorSets: total > mesh * (1 + 1e-12) };
+}
+export const momentUnc = (m, Umag, unc, w = null) => momentUncParts(m, Umag, unc, w).total;
 // Verdict with the input uncertainty U (g·mm): PASS only if |R| + U ≤ tol, FAIL if |R| − U > tol, else 'unresolved'
 // (the tolerance is finer than what the inputs can resolve).
 export function verdictU(R, U, limit) {

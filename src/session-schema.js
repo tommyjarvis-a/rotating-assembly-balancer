@@ -74,6 +74,8 @@ export function cleanGenMeta(m) {
   for (const [k, n] of Object.entries(META_VEC)) if (m[k] != null) { if (finiteVec(m[k], n)) o[k] = m[k].slice(); else bad++; }
   for (const k of ['capped', 'contained']) if (m[k] != null) { if (typeof m[k] === 'boolean') o[k] = m[k]; else bad++; }
   if (m.notes != null) { if (Array.isArray(m.notes) && m.notes.length <= 10 && m.notes.every(s => typeof s === 'string' && s.length <= 300)) o.notes = m.notes.slice(); else bad++; }
+  if (m.goal != null) { if (m.goal === 'pass' || m.goal === 'minimal') o.goal = m.goal; else bad++; } // L17 (alpha.6)
+  for (const k of ['unc', 'stopTol']) if (m[k] != null) { if (num(m[k]) && m[k] >= 0) o[k] = m[k]; else bad++; }
   if (m.key != null) { if (typeof m.key === 'string' && m.key.length <= 4000) o.key = m.key; else bad++; }
   return { o, bad };
 }
